@@ -25,4 +25,9 @@ fi
 
 /usr/bin/env bash -lc "$DEPLOY_RESTART_COMMAND"
 
-curl --fail --silent --show-error "${DEPLOY_HEALTHCHECK_URL:-https://api.jox.fun/health}"
+if [[ -z "${DEPLOY_HEALTHCHECK_URL:-}" ]]; then
+  echo "DEPLOY_HEALTHCHECK_URL is required on the protected production runner" >&2
+  exit 1
+fi
+
+curl --fail --silent --show-error "$DEPLOY_HEALTHCHECK_URL"

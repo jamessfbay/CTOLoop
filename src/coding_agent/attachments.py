@@ -140,7 +140,7 @@ def download_issue_images(
             headers={
                 "Accept": "image/avif,image/webp,image/png,image/jpeg,image/gif",
                 "Authorization": f"Bearer {github_token}",
-                "User-Agent": "JOX-CodingAgent/0.1",
+                "User-Agent": "CodingAgent/0.1",
             },
         )
         try:

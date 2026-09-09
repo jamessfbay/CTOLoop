@@ -17,11 +17,11 @@ base_branch = "main"
 branch_prefix = "codex/issue-"
 worktree_root = "/tmp/base-all-coding-agent"
 # Optional: after a PR is merged, fast-forward this checkout from origin/main.
-# production_path = "/srv/jox-production"
+# production_path = "/srv/coding-agent-production"
 # Optional: use a separate Git checkout and copy only tracked files to production_path.
-# production_checkout_path = "/srv/jox-production-checkout"
-git_user_name = "JOX Coding Agent"
-git_user_email = "coding-agent@jox.fun"
+# production_checkout_path = "/srv/coding-agent-production-checkout"
+git_user_name = "CodingAgent"
+git_user_email = "coding-agent@example.com"
 
 # Optional commands run in production_path after the merged revision is copied.
 # They run in order and are skipped when no entries are configured. Use argv

@@ -1,4 +1,4 @@
-# JOX CodingAgent
+# CodingAgent
 
 `CodingAgent` is a Python service that orchestrates the locally authenticated Codex CLI for three bounded engineering workflows: read-only PR review, read-only CI failure diagnosis, and reviewed Issue-to-PR implementation. It does not send production credentials to Codex. Optionally, after a PR is merged, it can update a dedicated checkout and copy tracked files into a local production directory without building or restarting services.
 
@@ -148,8 +148,8 @@ repository = "unsungb/base-all"
 path = "/var/www/workspace/base-all"
 base_branch = "main"
 worktree_root = "/tmp/base-all-coding-agent"
-production_path = "/srv/jox-production"
-production_checkout_path = "/srv/jox-production-checkout"
+production_path = "/srv/coding-agent-production"
+production_checkout_path = "/srv/coding-agent-production-checkout"
 ```
 
 On each polling cycle, merged PRs are detected through GitHub. The production
@@ -276,10 +276,10 @@ Require at least one human review for security, contract, migration, payment, au
 
 The deployment workflow is disabled unless the repository variable `ENABLE_PRODUCTION_DEPLOY` equals `true`. It additionally requires:
 
-- a self-hosted runner labeled `jox-production`;
+- a self-hosted runner labeled `coding-agent-production`;
 - a protected GitHub Environment named `production` with required reviewers;
 - `DEPLOY_RESTART_COMMAND` configured as a repository/environment variable;
-- optionally `DEPLOY_HEALTHCHECK_URL` (defaults to `https://api.jox.fun/health`).
+- `DEPLOY_HEALTHCHECK_URL` configured as a repository/environment variable.
 
 The checked-in deployment script only fast-forwards to `origin/main`, builds the frontend, invokes the configured process-manager restart hook, and verifies health. Rollback remains an explicit operator action because database and blockchain changes may not be safely reversible.
 
