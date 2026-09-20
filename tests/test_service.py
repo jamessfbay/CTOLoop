@@ -187,6 +187,165 @@ def test_step_log_includes_repository_issue_and_step(caplog):
     assert "unsungb/base-all issue #12 — Step: Validate changes — running api-tests" in caplog.text
 
 
+def test_issue_triage_uses_read_only_structured_codex(monkeypatch):
+    worker = CodingAgentService(settings()).workers[0]
+    issue = Issue(
+        number=21,
+        title="How does authentication work?",
+        body="Please explain the current design.",
+        url="https://github.com/unsungb/base-all/issues/21",
+        author="alice",
+        labels=(worker.target.github.ready_label,),
+        comments=({"author": "bob", "body": "Focus on GitHub auth."},),
+    )
+    captured = {}
+
+    def fake_codex(prompt, schema, **kwargs):
+        captured.update(prompt=prompt, schema=schema, kwargs=kwargs)
+        return {
+            "intent": "conversation",
+            "reason": "The Issue asks for an explanation only.",
+            "answer": "Authentication is isolated per repository.",
+        }
+
+    monkeypatch.setattr(worker, "_run_structured_codex", fake_codex)
+
+    assert worker._triage_issue(issue) == {
+        "intent": "conversation",
+        "reason": "The Issue asks for an explanation only.",
+        "answer": "Authentication is isolated per repository.",
+    }
+    assert captured["kwargs"] == {"task_name": "issue-triage"}
+    assert captured["schema"]["properties"]["intent"]["enum"] == [
+        "code_change", "conversation",
+    ]
+    assert "Work read-only" in captured["prompt"]
+    assert "Comment by bob" in captured["prompt"]
+
+
+def test_conversation_issue_posts_answer_without_worktree_or_pr(monkeypatch, tmp_path):
+    repository_path = tmp_path / "repository"
+    repository_path.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text(f'''
+[[repositories]]
+repository = "org/repo"
+path = "{repository_path}"
+worktree_root = "{tmp_path / 'worktrees'}"
+''')
+    worker = CodingAgentService(load_settings(config)).workers[0]
+    issue = Issue(
+        number=22,
+        title="What does this service do?",
+        body="Give me a short overview.",
+        url="https://github.com/org/repo/issues/22",
+        author="alice",
+        labels=(worker.target.github.ready_label,),
+    )
+    labels = []
+    comments = []
+    monkeypatch.setattr(worker.github, "get_issue", lambda _number: issue)
+    monkeypatch.setattr(
+        worker.github, "labels",
+        lambda number, **kwargs: labels.append((number, kwargs)),
+    )
+    monkeypatch.setattr(
+        worker.github, "comment",
+        lambda number, body: comments.append((number, body)),
+    )
+    monkeypatch.setattr(worker, "_triage_issue", lambda _issue: {
+        "intent": "conversation",
+        "reason": "This is a question.",
+        "answer": "It turns reviewed Issues into code changes or read-only answers.",
+    })
+    monkeypatch.setattr(
+        worker, "_prepare_worktree",
+        lambda *_args: pytest.fail("conversation must not create a worktree"),
+    )
+    monkeypatch.setattr(
+        worker.github, "create_pr",
+        lambda *_args, **_kwargs: pytest.fail("conversation must not create a PR"),
+    )
+
+    assert worker.process_issue(issue) == issue.url
+    assert labels == [
+        (22, {
+            "add": (worker.target.github.working_label,),
+            "remove": (worker.target.github.ready_label,),
+        }),
+        (22, {"remove": (worker.target.github.working_label,)}),
+    ]
+    assert len(comments) == 2
+    assert "determining whether it needs a code change" in comments[0][1]
+    assert "### Step: Answer question" in comments[1][1]
+    assert "read-only Codex run" in comments[1][1]
+    assert worker.state.recent(1)[0][3] == "answered"
+
+
+def test_conversation_triage_requires_an_answer(monkeypatch):
+    worker = CodingAgentService(settings()).workers[0]
+    issue = Issue(23, "Question", "Why?", "https://example.test/23", "alice", ())
+    monkeypatch.setattr(worker, "_run_structured_codex", lambda *_args, **_kwargs: {
+        "intent": "conversation", "reason": "A question.", "answer": "",
+    })
+
+    with pytest.raises(AgentError, match="returned no answer"):
+        worker._triage_issue(issue)
+
+
+def test_code_change_triage_continues_to_pull_request_flow(monkeypatch, tmp_path):
+    repository_path = tmp_path / "repository"
+    repository_path.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text(f'''
+[[repositories]]
+repository = "org/repo"
+path = "{repository_path}"
+worktree_root = "{tmp_path / 'worktrees'}"
+''')
+    worker = CodingAgentService(load_settings(config)).workers[0]
+    issue = Issue(
+        number=24,
+        title="Fix the greeting",
+        body="Change the greeting to hello.",
+        url="https://github.com/org/repo/issues/24",
+        author="alice",
+        labels=(worker.target.github.ready_label,),
+    )
+    calls = []
+    monkeypatch.setattr(worker.github, "get_issue", lambda _number: issue)
+    monkeypatch.setattr(worker.github, "labels", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker.github, "comment", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker, "_triage_issue", lambda _issue: {
+        "intent": "code_change", "reason": "A file must change.", "answer": "",
+    })
+    monkeypatch.setattr(
+        worker, "_prepare_worktree",
+        lambda branch, worktree: calls.append(("prepare", branch, worktree)),
+    )
+    monkeypatch.setattr(worker, "_run_codex", lambda *_args: "implementation complete")
+    monkeypatch.setattr(worker, "_changed_paths", lambda _worktree: ("app.py",))
+    monkeypatch.setattr(worker, "_validate", lambda _worktree: ())
+    monkeypatch.setattr(
+        worker, "_commit_and_push",
+        lambda *_args: calls.append(("commit",)),
+    )
+    monkeypatch.setattr(
+        worker.github, "create_pr",
+        lambda *_args: "https://github.com/org/repo/pull/25",
+    )
+    monkeypatch.setattr(
+        worker, "_remove_worktree",
+        lambda worktree: calls.append(("cleanup", worktree)),
+    )
+
+    assert worker.process_issue(issue) == "https://github.com/org/repo/pull/25"
+    assert calls[0][0] == "prepare"
+    assert ("commit",) in calls
+    assert calls[-1][0] == "cleanup"
+    assert worker.state.recent(1)[0][3] == "pr-open"
+
+
 def test_automatic_poll_skips_issue_claimed_after_listing(monkeypatch, caplog):
     worker = CodingAgentService(settings()).workers[0]
     listed_issue = Issue(

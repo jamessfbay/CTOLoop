@@ -1,19 +1,20 @@
 # CodingAgent
 
-`CodingAgent` is a Python service that orchestrates the locally authenticated Codex CLI for three bounded engineering workflows: read-only PR review, read-only CI failure diagnosis, and reviewed Issue-to-PR implementation. It does not send production credentials to Codex. Optionally, after a PR is merged, it can update a dedicated checkout and copy tracked files into a local production directory without building or restarting services.
+`CodingAgent` is a Python service that orchestrates the locally authenticated Codex CLI for four bounded workflows: read-only Issue questions, read-only PR review, read-only CI failure diagnosis, and reviewed Issue-to-PR implementation. It does not send production credentials to Codex. Optionally, after a PR is merged, it can update a dedicated checkout and copy tracked files into a local production directory without building or restarting services.
 
 ## Flow
 
 1. A maintainer reviews an Issue and adds `agent:ready`.
-2. The daemon claims it with `agent:working` and removes `agent:ready`.
-3. A fresh Git worktree is created from `origin/main`.
-4. GitHub-uploaded images in the Issue body or comments are downloaded to a temporary directory and attached to `codex exec`.
-5. `codex exec` implements the smallest fix and regression tests.
-6. Protected paths are rejected and configured validation commands run.
-7. The daemon commits, pushes, and opens a PR linked to the Issue.
-8. GitHub Actions runs API, frontend, and CodingAgent CI.
-9. Optional GitHub auto-merge waits for branch protection.
-10. A successful `main` CI run may deploy through the protected `production` environment and a dedicated self-hosted runner.
+2. The daemon claims it with `agent:working`, removes `agent:ready`, and uses a read-only Codex run to classify the request.
+3. Questions, explanations, analysis, and brainstorming are answered directly in an Issue comment. The run finishes as `answered` without creating a branch, worktree, repository change, or PR.
+4. Requests that explicitly require repository changes continue through the implementation flow: a fresh Git worktree is created from `origin/main`.
+5. GitHub-uploaded images in the Issue body or comments are downloaded to a temporary directory and attached to the implementation `codex exec`.
+6. `codex exec` implements the smallest fix and regression tests.
+7. Protected paths are rejected and configured validation commands run.
+8. The daemon commits, pushes, and opens a PR linked to the Issue.
+9. GitHub Actions runs API, frontend, and CodingAgent CI.
+10. Optional GitHub auto-merge waits for branch protection.
+11. A successful `main` CI run may deploy through the protected `production` environment and a dedicated self-hosted runner.
 
 ## Install
 
@@ -236,7 +237,7 @@ available through `./update.sh`. It clones the dedicated production checkout whe
 missing, fast-forwards its configured base branch, and copies only tracked files
 to the production path.
 
-`bootstrap` creates or updates the four workflow labels in every configured repository. An Issue is processed only after a maintainer adds `agent:ready`. On failure it receives `agent:failed`; fix the service problem and re-add `agent:ready` to retry. With multiple repositories, `--issue` must be paired with `--repository` because Issue numbers are repository-local.
+`bootstrap` creates or updates the four workflow labels in every configured repository. An Issue is processed only after a maintainer adds `agent:ready`. Natural-language requests do not need a command prefix. A read-only question is answered in the Issue and has `agent:working` removed; an implementation request proceeds to a PR. On failure it receives `agent:failed`; fix the service problem and re-add `agent:ready` to retry. With multiple repositories, `--issue` must be paired with `--repository` because Issue numbers are repository-local.
 
 ## Run continuously
 
