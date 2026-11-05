@@ -1,9 +1,15 @@
 # CTOLoop
 
-CTOLoop is a governed GitHub-to-Codex automation service. It connects reviewed
-GitHub work with a locally authenticated Codex CLI and keeps analysis, code
-changes, validation, publishing, and optional production synchronization inside
-explicit control boundaries.
+CTOLoop is an event-driven, no-human-in-the-execution-loop software delivery
+service. It continuously watches governed GitHub state, starts isolated Codex and
+gstack workflows when an authorized event appears, and carries the work through
+analysis, code changes, validation, publishing, and optional production
+synchronization without someone supervising a terminal or chat session.
+
+**No babysitting. No interactive agent session. GitHub is the control plane.**
+Repository policy, labels, validation commands, and protected paths are configured
+up front. Once an event satisfies that policy, CTOLoop executes the workflow,
+records the result, updates GitHub, and continues watching for the next event.
 
 CTOLoop supports four primary workflows:
 
@@ -16,9 +22,27 @@ CTOLoop does not pass production credentials to Codex. Target repositories own
 their CI and deployment policies; CTOLoop only invokes the commands explicitly
 configured for each repository.
 
-## How Issue processing works
+## No-human, event-driven operation
 
-1. A maintainer reviews an Issue and adds `agent:ready`.
+CTOLoop is designed to run continuously as a daemon. GitHub state changes are its
+events and durable queue:
+
+- An Issue receiving `agent:ready` triggers analysis and, when needed, an isolated
+  implementation workflow.
+- Validation success triggers commit, push, and pull-request creation.
+- A merged CTOLoop pull request triggers the configured production synchronization
+  on the next polling cycle.
+- Failures are recorded in SQLite and reflected through GitHub labels and comments;
+  the daemon keeps processing other configured repositories.
+
+There is no human in the normal execution path. A human or another policy system
+may authorize work by applying a label, but nobody needs to remain online while it
+runs. If a task requires a genuine product decision, the pipeline stops safely and
+reports that input is required instead of guessing.
+
+## How event processing works
+
+1. A maintainer or upstream policy automation adds `agent:ready` to an authorized Issue.
 2. CTOLoop claims it with `agent:working` and removes `agent:ready`.
 3. A read-only Codex run classifies the request.
 4. Questions and analysis receive a direct Issue response without a branch or PR.
@@ -29,6 +53,8 @@ configured for each repository.
 9. CTOLoop commits, pushes, and opens a pull request linked to the Issue.
 10. Optional auto-merge and post-merge production synchronization remain policy-gated.
 
+After step 1, the normal path is fully unattended.
+
 ## Requirements
 
 - Python 3.11 or newer
@@ -36,6 +62,7 @@ configured for each repository.
 - GitHub CLI (`gh`)
 - Codex CLI (`codex`)
 - `pytest` for the CTOLoop test suite
+- Optional: gstack installed for the Codex host when `[gstack].enabled = true`
 
 CTOLoop has no third-party Python runtime dependencies.
 
@@ -102,6 +129,43 @@ up to `scheduler.max_parallel_repositories`.
 
 The legacy single-repository TOML shape remains readable, but new installations
 should use `[[repositories]]`.
+
+### Optional gstack workflow layer
+
+CTOLoop can use gstack as a bounded workflow and quality layer while retaining
+exclusive control of GitHub writes, worktrees, protected paths, validation,
+commits, pushes, pull requests, and deployment.
+
+Install gstack for the Codex host, then configure:
+
+```toml
+[gstack]
+enabled = true
+skill_root = "~/.codex/skills"
+state_root = "state/gstack"
+fallback_to_codex = true
+review_skills = ["review"]
+ci_skills = ["investigate"]
+implementation_skills = ["review", "health"]
+```
+
+The default gstack mapping is:
+
+- Pull request review: `review`
+- CI diagnosis: `investigate`
+- After implementation: `review`, then `health`
+
+The implementation pipeline also accepts `qa`, `qa-only`, `cso`,
+`plan-eng-review`, `plan-design-review`, and `plan-devex-review`. These longer
+stages are opt-in because they may require a browser, project services, more
+runtime, or human product decisions. `ship` and `land-and-deploy` are deliberately
+not accepted: CTOLoop owns those state-changing operations.
+
+Each stage receives an isolated `GSTACK_HOME`, no `GH_TOKEN` or `GITHUB_TOKEN`,
+and an explicit non-interactive instruction. If a configured skill is missing or
+fails and `fallback_to_codex` is true, CTOLoop records the fallback and continues
+with the plain Codex result. Execution metadata and bounded output tails are stored
+in `state/runs.sqlite3` under `execution_results`.
 
 ### Repository-specific GitHub authentication
 
