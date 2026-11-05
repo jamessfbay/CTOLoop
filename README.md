@@ -251,3 +251,9 @@ environment variables:
 Use a dedicated machine account or narrowly scoped GitHub App/token for long-term
 operation. Keep auto-merge disabled until branch protection and required checks
 are configured in each target repository.
+
+## License
+
+CTOLoop is open source under the [MIT License](LICENSE). You may use, modify,
+distribute, sublicense, and sell copies of the software as long as the copyright
+and license notice remains included.

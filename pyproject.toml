@@ -7,6 +7,7 @@ name = "ctoloop"
 version = "0.1.0"
 description = "Governed GitHub-to-Codex automation for issue delivery, review, and CI diagnosis"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = []
 
