@@ -43,6 +43,23 @@ class CodexConfig:
     approval_policy: str = "never"
 
 
+GSTACK_SKILLS = frozenset({
+    "review", "investigate", "health", "qa", "qa-only", "cso",
+    "plan-eng-review", "plan-design-review", "plan-devex-review",
+})
+
+
+@dataclasses.dataclass(frozen=True)
+class GStackConfig:
+    enabled: bool = False
+    skill_root: pathlib.Path = pathlib.Path("~/.codex/skills")
+    state_root: pathlib.Path = pathlib.Path("state/gstack")
+    fallback_to_codex: bool = True
+    review_skills: tuple[str, ...] = ("review",)
+    ci_skills: tuple[str, ...] = ("investigate",)
+    implementation_skills: tuple[str, ...] = ("review", "health")
+
+
 @dataclasses.dataclass(frozen=True)
 class AutomationConfig:
     agent_name: str = "CTOLoop"
@@ -83,6 +100,7 @@ class SchedulerConfig:
 class Settings:
     repositories: tuple[RepositoryTarget, ...]
     codex: CodexConfig
+    gstack: GStackConfig
     automation: AutomationConfig
     scheduler: SchedulerConfig
     config_path: pathlib.Path
@@ -118,6 +136,18 @@ def _validation_commands(raw: list[dict[str, Any]]) -> tuple[ValidationCommand, 
         )
         for item in raw
     )
+
+
+def _gstack_skills(raw: dict[str, Any], key: str, defaults: tuple[str, ...]) -> tuple[str, ...]:
+    skills = tuple(str(item).strip() for item in raw.get(key, defaults))
+    invalid = sorted({skill for skill in skills if skill not in GSTACK_SKILLS})
+    if invalid:
+        raise ValueError(
+            f"[gstack].{key} contains unsupported skills: {', '.join(invalid)}"
+        )
+    if len(skills) != len(set(skills)):
+        raise ValueError(f"[gstack].{key} must not contain duplicate skills")
+    return skills
 
 
 def _github_config(
@@ -168,6 +198,7 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
 
     github_raw = raw.get("github", {})
     codex_raw = raw.get("codex", {})
+    gstack_raw = raw.get("gstack", {})
     auto_raw = raw.get("automation", {})
     scheduler_raw = raw.get("scheduler", {})
     codex = CodexConfig(
@@ -176,6 +207,25 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
         timeout_seconds=max(60, int(codex_raw.get("timeout_seconds", 3600))),
         sandbox=str(codex_raw.get("sandbox", "workspace-write")),
         approval_policy=str(codex_raw.get("approval_policy", "never")),
+    )
+    skill_root = pathlib.Path(
+        gstack_raw.get("skill_root", "~/.codex/skills")
+    ).expanduser()
+    if not skill_root.is_absolute():
+        skill_root = config_path.parent / skill_root
+    state_root = pathlib.Path(gstack_raw.get("state_root", "state/gstack")).expanduser()
+    if not state_root.is_absolute():
+        state_root = config_path.parent / state_root
+    gstack = GStackConfig(
+        enabled=bool(gstack_raw.get("enabled", False)),
+        skill_root=skill_root.resolve(),
+        state_root=state_root.resolve(),
+        fallback_to_codex=bool(gstack_raw.get("fallback_to_codex", True)),
+        review_skills=_gstack_skills(gstack_raw, "review_skills", ("review",)),
+        ci_skills=_gstack_skills(gstack_raw, "ci_skills", ("investigate",)),
+        implementation_skills=_gstack_skills(
+            gstack_raw, "implementation_skills", ("review", "health"),
+        ),
     )
     automation = AutomationConfig(
         agent_name=str(auto_raw.get("agent_name", "CTOLoop")).strip() or "CTOLoop",
@@ -241,4 +291,4 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
         poll_seconds=max(10, int(scheduler_raw.get("poll_seconds", github_raw.get("poll_seconds", 60)))),
         max_parallel_repositories=max(1, int(scheduler_raw.get("max_parallel_repositories", 2))),
     )
-    return Settings(tuple(targets), codex, automation, scheduler, config_path)
+    return Settings(tuple(targets), codex, gstack, automation, scheduler, config_path)

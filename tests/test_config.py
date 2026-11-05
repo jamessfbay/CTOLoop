@@ -19,6 +19,60 @@ def test_load_example_config():
     assert settings.validation[0].argv == ("python3", "-m", "pytest", "-q")
     assert len(settings.validation) == 1
     assert settings.scheduler.max_parallel_repositories == 2
+    assert settings.gstack.enabled is False
+    assert settings.gstack.implementation_skills == ("review", "health")
+
+
+def test_load_gstack_pipeline_with_extended_stages(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('''
+[gstack]
+enabled = true
+skill_root = "./skills"
+state_root = "state/gstack"
+fallback_to_codex = false
+review_skills = ["review"]
+ci_skills = ["investigate"]
+implementation_skills = ["plan-eng-review", "review", "health", "qa", "cso"]
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    settings = load_settings(config)
+    assert settings.gstack.enabled is True
+    assert settings.gstack.skill_root == (tmp_path / "skills").resolve()
+    assert settings.gstack.state_root == (tmp_path / "state/gstack").resolve()
+    assert settings.gstack.fallback_to_codex is False
+    assert settings.gstack.implementation_skills[-2:] == ("qa", "cso")
+
+
+def test_rejects_unknown_gstack_skill(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('''
+[gstack]
+implementation_skills = ["ship"]
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    with pytest.raises(ValueError, match="unsupported skills: ship"):
+        load_settings(config)
+
+
+def test_rejects_duplicate_gstack_skills(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('''
+[gstack]
+review_skills = ["review", "review"]
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    with pytest.raises(ValueError, match="must not contain duplicate skills"):
+        load_settings(config)
 
 
 def test_load_multiple_repositories(tmp_path):

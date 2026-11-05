@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from ctoloop.commands import expand_argv_globs
+from ctoloop.backends import CodexBackend, ExecutionResult, GStackBackend
 from ctoloop.config import load_settings
 from ctoloop.github import (
     GitHub, Issue, PullRequest, PullRequestStatus, WorkflowRun,
@@ -323,7 +324,11 @@ worktree_root = "{tmp_path / 'worktrees'}"
         worker, "_prepare_worktree",
         lambda branch, worktree: calls.append(("prepare", branch, worktree)),
     )
-    monkeypatch.setattr(worker, "_run_codex", lambda *_args: "implementation complete")
+    def fake_run_codex(_issue, _worktree, *, run_id=None):
+        calls.append(("codex", run_id))
+        return "implementation complete"
+
+    monkeypatch.setattr(worker, "_run_codex", fake_run_codex)
     monkeypatch.setattr(worker, "_changed_paths", lambda _worktree: ("app.py",))
     monkeypatch.setattr(worker, "_validate", lambda _worktree: ())
     monkeypatch.setattr(
@@ -341,6 +346,7 @@ worktree_root = "{tmp_path / 'worktrees'}"
 
     assert worker.process_issue(issue) == "https://github.com/org/repo/pull/25"
     assert calls[0][0] == "prepare"
+    assert any(item[0] == "codex" and item[1] > 0 for item in calls)
     assert ("commit",) in calls
     assert calls[-1][0] == "cleanup"
     assert worker.state.recent(1)[0][3] == "pr-open"
@@ -596,6 +602,39 @@ def test_codex_receives_issue_images_and_temporary_files_are_removed(monkeypatch
     assert not image_path.exists()
 
 
+def test_gstack_needs_input_stops_before_publish(monkeypatch, tmp_path):
+    worker = CTOLoopService(settings()).workers[0]
+    backend = GStackBackend(
+        worker.settings.gstack,
+        CodexBackend(worker.settings.codex, lambda *_args, **_kwargs: None),
+        worker.target.github.repository,
+    )
+    monkeypatch.setattr(backend, "run_text", lambda *_args, **_kwargs: ExecutionResult(
+        output="audit",
+        backend="gstack",
+        requested_backend="gstack",
+        task_name="implementation",
+        skills=("plan-eng-review",),
+        structured={"stages": [{
+            "skill": "plan-eng-review",
+            "status": "needs_input",
+            "summary": "Choose the public API shape",
+        }]},
+    ))
+    worker.execution_backend = backend
+    issue = Issue(
+        number=13,
+        title="Add API",
+        body="Add the requested API.",
+        url="https://github.com/your-org/your-repo/issues/13",
+        author="alice",
+        labels=("agent:working",),
+    )
+
+    with pytest.raises(AgentError, match="requires attention.*public API shape"):
+        worker._run_codex(issue, tmp_path)
+
+
 def test_structured_codex_is_read_only_and_loads_final_result(monkeypatch, tmp_path):
     config = tmp_path / "config.toml"
     repository_path = tmp_path / "repository"
@@ -623,6 +662,45 @@ path = "{repository_path}"
     assert captured["argv"][captured["argv"].index("--ask-for-approval") + 1] == "never"
     assert "--output-schema" in captured["argv"]
     assert captured["prompt"] == "inspect safely"
+
+
+@pytest.mark.parametrize(("task_name", "expected_skills"), (
+    ("pr-review", ("review",)),
+    ("ci-diagnosis", ("investigate",)),
+))
+def test_gstack_structured_tasks_use_configured_skills_and_record_audit(
+    monkeypatch, task_name, expected_skills,
+):
+    worker = CTOLoopService(settings()).workers[0]
+    backend = GStackBackend(
+        worker.settings.gstack,
+        CodexBackend(worker.settings.codex, lambda *_args, **_kwargs: None),
+        worker.target.github.repository,
+    )
+    captured = {}
+
+    def fake_structured(_prompt, _schema, **kwargs):
+        captured.update(kwargs)
+        return ExecutionResult(
+            output="audit",
+            backend="gstack",
+            requested_backend="gstack",
+            task_name=task_name,
+            skills=tuple(kwargs["skills"]),
+            structured={"summary": "ok"},
+        )
+
+    monkeypatch.setattr(backend, "run_structured", fake_structured)
+    worker.execution_backend = backend
+
+    assert worker._run_structured_codex(
+        "inspect", {"type": "object"}, task_name=task_name,
+    ) == {"summary": "ok"}
+    assert captured["skills"] == expected_skills
+    audit = worker.state.recent_executions(1)[0]
+    assert audit[2:7] == (
+        task_name, "gstack", "gstack", "completed", json.dumps(expected_skills),
+    )
 
 
 def test_review_pr_generates_report_and_only_publishes_when_requested(monkeypatch):

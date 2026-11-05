@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sqlite3
 import threading
@@ -26,6 +27,17 @@ class State:
             self.connection.execute(
                 "ALTER TABLE runs ADD COLUMN repository TEXT NOT NULL DEFAULT ''"
             )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS execution_results (
+                id INTEGER PRIMARY KEY, run_id INTEGER,
+                repository TEXT NOT NULL, issue_number INTEGER,
+                task_name TEXT NOT NULL, backend TEXT NOT NULL,
+                requested_backend TEXT NOT NULL, status TEXT NOT NULL,
+                skills TEXT NOT NULL, payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            )"""
+        )
         self.connection.commit()
 
     def start(self, repository: str, issue_number: int, branch: str) -> int:
@@ -58,6 +70,50 @@ class State:
                     (repository,),
                 )
             ]
+
+    def record_execution(
+        self,
+        *,
+        repository: str,
+        task_name: str,
+        backend: str,
+        requested_backend: str,
+        status: str,
+        skills: tuple[str, ...],
+        payload: dict[str, object],
+        run_id: int | None = None,
+        issue_number: int | None = None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        if len(payload_json) > 50000:
+            payload_json = json.dumps({
+                "truncated": True,
+                "payload_tail": payload_json[-48000:],
+            }, ensure_ascii=False)
+        with self.lock:
+            cursor = self.connection.execute(
+                "INSERT INTO execution_results("
+                "run_id, repository, issue_number, task_name, backend, "
+                "requested_backend, status, skills, payload, created_at"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id, repository, issue_number, task_name, backend,
+                    requested_backend, status, json.dumps(skills),
+                    payload_json, now,
+                ),
+            )
+            self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def recent_executions(self, limit: int = 20) -> list[tuple[object, ...]]:
+        with self.lock:
+            return list(self.connection.execute(
+                "SELECT repository, issue_number, task_name, backend, "
+                "requested_backend, status, skills, created_at "
+                "FROM execution_results ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ))
 
     def recent(self, limit: int = 20) -> list[tuple[object, ...]]:
         with self.lock:

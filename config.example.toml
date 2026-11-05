@@ -52,6 +52,20 @@ timeout_seconds = 3600
 sandbox = "workspace-write"
 approval_policy = "never"
 
+# Optional gstack workflow layer. CTOLoop remains responsible for worktrees,
+# protected paths, validation, commits, pushes, pull requests, and deployment.
+# Install gstack for Codex first, then enable this section.
+[gstack]
+enabled = false
+skill_root = "~/.codex/skills"
+state_root = "state/gstack"
+fallback_to_codex = true
+review_skills = ["review"]
+ci_skills = ["investigate"]
+implementation_skills = ["review", "health"]
+# Longer opt-in pipeline with browser, security, and plan review stages:
+# implementation_skills = ["plan-eng-review", "review", "health", "qa", "cso"]
+
 [automation]
 agent_name = "CTOLoop"
 agent_icon = "🤖"
