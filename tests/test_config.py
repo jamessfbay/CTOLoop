@@ -2,32 +2,22 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.config import load_settings
+from ctoloop.config import load_settings
 
 
 def test_load_example_config():
     path = Path(__file__).parents[1] / "config.example.toml"
     settings = load_settings(path)
-    assert settings.github.repository == "unsungb/base-all"
-    assert settings.github.auth_user == "unsungb"
-    assert settings.github.auth_config_dir == Path(__file__).parents[1] / "state/github-auth/base-all"
+    assert settings.github.repository == "your-org/your-repo"
+    assert settings.github.auth_user == "your-github-user"
+    assert settings.github.auth_config_dir == Path(__file__).parents[1] / "state/github-auth/your-repo"
     assert settings.repository.base_branch == "main"
-    assert settings.automation.agent_name == "CodingAgent"
+    assert settings.automation.agent_name == "CTOLoop"
     assert settings.automation.agent_icon == "🤖"
     assert settings.automation.max_issue_images == 4
     assert settings.automation.max_issue_image_bytes == 15_000_000
-    assert settings.validation[0].argv == ("npm", "ci", "--prefix", "frontend")
-    assert settings.validation[1].argv == (
-        "/usr/bin/env",
-        "-C",
-        "api",
-        "NODE_PATH=frontend/node_modules",
-        "/var/www/workspace/CodingAgent/.venv/bin/python",
-        "-m",
-        "pytest",
-        "tests",
-        "-q",
-    )
+    assert settings.validation[0].argv == ("python3", "-m", "pytest", "-q")
+    assert len(settings.validation) == 1
     assert settings.scheduler.max_parallel_repositories == 2
 
 

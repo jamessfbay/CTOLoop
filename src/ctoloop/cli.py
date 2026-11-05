@@ -7,13 +7,15 @@ import pathlib
 import sys
 
 from .config import load_settings
-from .service import CodingAgentService
+from .service import CTOLoopService
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="GitHub Issue to Codex PR orchestrator")
+    result = argparse.ArgumentParser(
+        description="CTOLoop governed GitHub-to-Codex automation",
+    )
     result.add_argument(
-        "--config", default=os.environ.get("CODING_AGENT_CONFIG", "config.toml"),
+        "--config", default=os.environ.get("CTOLOOP_CONFIG", "config.toml"),
         help="Path to TOML config (default: config.toml)",
     )
     result.add_argument("--verbose", action="store_true")
@@ -81,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         settings = load_settings(pathlib.Path(args.config))
-        service = CodingAgentService(settings)
+        service = CTOLoopService(settings)
         if args.command == "doctor":
             failures = service.doctor()
             if failures:
@@ -117,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("\t".join(str(value or "") for value in row))
         return 0
     except Exception as exc:
-        logging.exception("CodingAgent failed: %s", exc)
+        logging.exception("CTOLoop failed: %s", exc)
         return 1
 
 

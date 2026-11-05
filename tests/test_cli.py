@@ -1,4 +1,4 @@
-from coding_agent.cli import parser
+from ctoloop.cli import parser
 
 
 def test_patch_issue_arguments():

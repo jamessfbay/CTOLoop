@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PID_FILE="${CODING_AGENT_PID_FILE:-$ROOT_DIR/state/coding-agent.pid}"
-STOP_TIMEOUT="${CODING_AGENT_STOP_TIMEOUT:-30}"
-SYSTEMD_UNIT="${CODING_AGENT_SYSTEMD_UNIT:-coding-agent.service}"
+PID_FILE="${CTOLOOP_PID_FILE:-$ROOT_DIR/state/ctoloop.pid}"
+STOP_TIMEOUT="${CTOLOOP_STOP_TIMEOUT:-30}"
+SYSTEMD_UNIT="${CTOLOOP_SYSTEMD_UNIT:-ctoloop.service}"
 
 if [[ ! "$STOP_TIMEOUT" =~ ^[0-9]+$ ]]; then
-  echo "Invalid CODING_AGENT_STOP_TIMEOUT: $STOP_TIMEOUT" >&2
+  echo "Invalid CTOLOOP_STOP_TIMEOUT: $STOP_TIMEOUT" >&2
   exit 1
 fi
 
@@ -25,17 +25,17 @@ process_group_is_running() {
 if [[ ! -f "$PID_FILE" ]]; then
   if command -v systemctl >/dev/null 2>&1 \
     && systemctl is-active --quiet "$SYSTEMD_UNIT" 2>/dev/null; then
-    echo "CodingAgent is managed by systemd ($SYSTEMD_UNIT); stopping the service..."
+    echo "CTOLoop is managed by systemd ($SYSTEMD_UNIT); stopping the service..."
     if systemctl stop "$SYSTEMD_UNIT" 2>/dev/null \
       || sudo -n systemctl stop "$SYSTEMD_UNIT" 2>/dev/null; then
-      echo "CodingAgent stopped."
+      echo "CTOLoop stopped."
       exit 0
     fi
     echo "Unable to stop $SYSTEMD_UNIT without elevated privileges." >&2
     echo "Run: sudo systemctl stop $SYSTEMD_UNIT" >&2
     exit 1
   fi
-  echo "CodingAgent is not running (no PID file)."
+  echo "CTOLoop is not running (no PID file)."
   exit 0
 fi
 
@@ -46,14 +46,14 @@ if [[ ! "$agent_pid" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 if ! kill -0 "$agent_pid" 2>/dev/null; then
-  echo "CodingAgent is already stopped; removing stale PID file."
+  echo "CTOLoop is already stopped; removing stale PID file."
   rm -f -- "$PID_FILE"
   exit 0
 fi
 
 cmdline="$(tr '\0' ' ' <"/proc/$agent_pid/cmdline" 2>/dev/null || true)"
-if [[ "$cmdline" != *"coding-agent"* || "$cmdline" != *"watch"* ]]; then
-  echo "Refusing to stop PID $agent_pid: it does not look like CodingAgent watch." >&2
+if [[ "$cmdline" != *"ctoloop"* || "$cmdline" != *"watch"* ]]; then
+  echo "Refusing to stop PID $agent_pid: it does not look like CTOLoop watch." >&2
   echo "Command: ${cmdline:-unavailable}" >&2
   exit 1
 fi
@@ -65,13 +65,13 @@ if [[ ! "$agent_pgid" =~ ^[0-9]+$ ]] || [[ "$agent_pgid" != "$agent_pid" ]]; the
   exit 1
 fi
 
-echo "Stopping CodingAgent process group $agent_pgid (leader PID $agent_pid)..."
+echo "Stopping CTOLoop process group $agent_pgid (leader PID $agent_pid)..."
 kill -TERM -- "-$agent_pgid"
 
 for ((second = 0; second < STOP_TIMEOUT; second++)); do
   if ! process_group_is_running "$agent_pgid"; then
     rm -f -- "$PID_FILE"
-    echo "CodingAgent stopped."
+    echo "CTOLoop stopped."
     exit 0
   fi
   sleep 1
@@ -79,11 +79,11 @@ done
 
 if ! process_group_is_running "$agent_pgid"; then
   rm -f -- "$PID_FILE"
-  echo "CodingAgent stopped."
+  echo "CTOLoop stopped."
   exit 0
 fi
 
-echo "CodingAgent did not exit after $STOP_TIMEOUT seconds; killing process group $agent_pgid." >&2
+echo "CTOLoop did not exit after $STOP_TIMEOUT seconds; killing process group $agent_pgid." >&2
 kill -KILL -- "-$agent_pgid" 2>/dev/null || true
 sleep 1
 
@@ -93,4 +93,4 @@ if process_group_is_running "$agent_pgid"; then
 fi
 
 rm -f -- "$PID_FILE"
-echo "CodingAgent was force-stopped."
+echo "CTOLoop was force-stopped."

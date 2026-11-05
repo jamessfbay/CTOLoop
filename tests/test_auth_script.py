@@ -57,7 +57,7 @@ repository = "org/repo"
 path = "{tmp_path / 'repo'}"
 
 [repositories.github]
-auth_user = "test-user"
+auth_user = "TEST-USER"
 auth_config_dir = "{tmp_path / 'github-auth'}"
 
 [codex]
@@ -68,14 +68,15 @@ executable = "{codex}"
         **os.environ,
         "AUTH_TEST_CALLS": str(calls),
         "AUTH_TEST_CODEX_STATE": str(codex_state),
-        "CODING_AGENT_CONFIG": str(config),
+        "CTOLOOP_CONFIG": str(config),
     }
     command = [str(ROOT / "auth.sh")]
     if force:
         command.append("--force")
     command.append("org/repo")
     result = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True)
-    return result, calls.read_text().splitlines()
+    recorded_calls = calls.read_text().splitlines() if calls.exists() else []
+    return result, recorded_calls
 
 
 def test_auth_verifies_existing_github_and_codex_credentials(tmp_path):

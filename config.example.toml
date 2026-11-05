@@ -11,17 +11,17 @@ poll_seconds = 60
 max_parallel_repositories = 2
 
 [[repositories]]
-repository = "unsungb/base-all"
-path = "state/repositories/unsungb/base-all"
+repository = "your-org/your-repo"
+path = "state/repositories/your-org/your-repo"
 base_branch = "main"
 branch_prefix = "codex/issue-"
-worktree_root = "/tmp/base-all-coding-agent"
+worktree_root = "/tmp/your-repo-ctoloop"
 # Optional: after a PR is merged, fast-forward this checkout from origin/main.
-# production_path = "/srv/coding-agent-production"
+# production_path = "/srv/your-repo"
 # Optional: use a separate Git checkout and copy only tracked files to production_path.
-# production_checkout_path = "/srv/coding-agent-production-checkout"
-git_user_name = "CodingAgent"
-git_user_email = "coding-agent@example.com"
+# production_checkout_path = "/srv/your-repo-checkout"
+git_user_name = "CTOLoop"
+git_user_email = "ctoloop@example.com"
 
 # Optional commands run in production_path after the merged revision is copied.
 # They run in order and are skipped when no entries are configured. Use argv
@@ -39,11 +39,11 @@ git_user_email = "coding-agent@example.com"
 
 [repositories.github]
 # Use a stored gh account without changing the globally active account.
-auth_user = "unsungb"
+auth_user = "your-github-user"
 # Keep this repository's credentials isolated from every other repository.
-auth_config_dir = "state/github-auth/base-all"
+auth_config_dir = "state/github-auth/your-repo"
 # Alternatively, load a token from the named environment variable.
-# token_env = "BASE_ALL_GITHUB_TOKEN"
+# token_env = "YOUR_REPO_GITHUB_TOKEN"
 
 [codex]
 executable = "codex"
@@ -53,7 +53,7 @@ sandbox = "workspace-write"
 approval_policy = "never"
 
 [automation]
-agent_name = "CodingAgent"
+agent_name = "CTOLoop"
 agent_icon = "🤖"
 create_draft_pr = false
 enable_auto_merge = false
@@ -64,7 +64,8 @@ max_issue_images = 4
 max_issue_image_bytes = 15000000
 protected_paths = [
   ".github/workflows/*",
-  "CodingAgent/*",
+  "CTOLoop/*",
+  "src/ctoloop/*",
   ".env",
   ".env.*",
   "*.pem",
@@ -76,20 +77,9 @@ protected_paths = [
 
 # Commands are argv arrays: no shell expansion is performed.
 [[repositories.validation]]
-name = "frontend-install"
-argv = ["npm", "ci", "--prefix", "frontend"]
+name = "tests"
+argv = ["python3", "-m", "pytest", "-q"]
 timeout_seconds = 1200
-
-[[repositories.validation]]
-name = "api-tests"
-argv = ["/usr/bin/env", "-C", "api", "NODE_PATH=frontend/node_modules", "/var/www/workspace/CodingAgent/.venv/bin/python", "-m", "pytest", "tests", "-q"]
-timeout_seconds = 1800
-
-[[repositories.validation]]
-name = "frontend-unit-tests"
-argv = ["node", "--test", "--experimental-strip-types", "frontend/tests/*.test.ts"]
-timeout_seconds = 1200
-expand_globs = true
 
 # Add another repository by repeating this block. Every repository must have a
 # unique local checkout and worktree_root. Validation commands belong to the
@@ -100,9 +90,9 @@ expand_globs = true
 # path = "state/repositories/your-org/another-repo"
 # base_branch = "main"
 # branch_prefix = "codex/issue-"
-# worktree_root = "/tmp/another-repo-coding-agent"
-# git_user_name = "Coding Agent"
-# git_user_email = "coding-agent@example.com"
+# worktree_root = "/tmp/another-repo-ctoloop"
+# git_user_name = "CTOLoop"
+# git_user_email = "ctoloop@example.com"
 #
 # [[repositories.validation]]
 # name = "tests"

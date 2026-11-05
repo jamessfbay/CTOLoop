@@ -27,11 +27,11 @@ class RepositoryConfig:
     path: pathlib.Path
     base_branch: str = "main"
     branch_prefix: str = "codex/issue-"
-    worktree_root: pathlib.Path = pathlib.Path("/tmp/coding-agent-worktrees")
+    worktree_root: pathlib.Path = pathlib.Path("/tmp/ctoloop-worktrees")
     production_path: pathlib.Path | None = None
     production_checkout_path: pathlib.Path | None = None
-    git_user_name: str = "Coding Agent"
-    git_user_email: str = "coding-agent@localhost"
+    git_user_name: str = "CTOLoop"
+    git_user_email: str = "ctoloop@localhost"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,7 +45,7 @@ class CodexConfig:
 
 @dataclasses.dataclass(frozen=True)
 class AutomationConfig:
-    agent_name: str = "CodingAgent"
+    agent_name: str = "CTOLoop"
     agent_icon: str = "🤖"
     create_draft_pr: bool = False
     enable_auto_merge: bool = False
@@ -150,14 +150,14 @@ def _repository_config(raw: dict[str, Any]) -> RepositoryConfig:
         path=pathlib.Path(_required(raw, "path", "repositories")).expanduser().resolve(),
         base_branch=str(raw.get("base_branch", "main")),
         branch_prefix=str(raw.get("branch_prefix", "codex/issue-")),
-        worktree_root=pathlib.Path(raw.get("worktree_root", "/tmp/coding-agent-worktrees")).expanduser().resolve(),
+        worktree_root=pathlib.Path(raw.get("worktree_root", "/tmp/ctoloop-worktrees")).expanduser().resolve(),
         production_path=pathlib.Path(production_path).expanduser().resolve() if production_path else None,
         production_checkout_path=(
             pathlib.Path(production_checkout_path).expanduser().resolve()
             if production_checkout_path else None
         ),
-        git_user_name=str(raw.get("git_user_name", "Coding Agent")),
-        git_user_email=str(raw.get("git_user_email", "coding-agent@localhost")),
+        git_user_name=str(raw.get("git_user_name", "CTOLoop")),
+        git_user_email=str(raw.get("git_user_email", "ctoloop@localhost")),
     )
 
 
@@ -178,7 +178,7 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
         approval_policy=str(codex_raw.get("approval_policy", "never")),
     )
     automation = AutomationConfig(
-        agent_name=str(auto_raw.get("agent_name", "CodingAgent")).strip() or "CodingAgent",
+        agent_name=str(auto_raw.get("agent_name", "CTOLoop")).strip() or "CTOLoop",
         agent_icon=str(auto_raw.get("agent_icon", "🤖")).strip(),
         create_draft_pr=bool(auto_raw.get("create_draft_pr", False)),
         enable_auto_merge=bool(auto_raw.get("enable_auto_merge", False)),

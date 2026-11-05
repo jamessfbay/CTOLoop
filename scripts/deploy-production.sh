@@ -2,32 +2,36 @@
 
 set -euo pipefail
 
-ROOT_DIR="${DEPLOY_ROOT:-/var/www/workspace}"
-EXPECTED_ROOT="/var/www/workspace"
+ROOT_DIR="${CTOLOOP_DEPLOY_ROOT:-}"
+BASE_BRANCH="${CTOLOOP_BASE_BRANCH:-main}"
 
-if [[ "$ROOT_DIR" != "$EXPECTED_ROOT" ]]; then
-  echo "Refusing unexpected deployment root: $ROOT_DIR" >&2
+if [[ -z "$ROOT_DIR" || ! -d "$ROOT_DIR/.git" ]]; then
+  echo "CTOLOOP_DEPLOY_ROOT must point to the target application's Git checkout" >&2
   exit 1
 fi
 
 cd "$ROOT_DIR"
-git fetch origin main
-git merge --ff-only origin/main
+git fetch origin "$BASE_BRANCH"
+git merge --ff-only "origin/$BASE_BRANCH"
 
-./buildFrontend.sh
+if [[ -z "${CTOLOOP_BUILD_COMMAND:-}" ]]; then
+  echo "CTOLOOP_BUILD_COMMAND is required on the protected production runner" >&2
+  exit 1
+fi
+/usr/bin/env bash -lc "$CTOLOOP_BUILD_COMMAND"
 
 # Production process management is installation-specific. Configure this hook
 # on the protected self-hosted runner, for example to invoke systemd or Forever.
-if [[ -z "${DEPLOY_RESTART_COMMAND:-}" ]]; then
-  echo "DEPLOY_RESTART_COMMAND is required on the protected production runner" >&2
+if [[ -z "${CTOLOOP_RESTART_COMMAND:-}" ]]; then
+  echo "CTOLOOP_RESTART_COMMAND is required on the protected production runner" >&2
   exit 1
 fi
 
-/usr/bin/env bash -lc "$DEPLOY_RESTART_COMMAND"
+/usr/bin/env bash -lc "$CTOLOOP_RESTART_COMMAND"
 
-if [[ -z "${DEPLOY_HEALTHCHECK_URL:-}" ]]; then
-  echo "DEPLOY_HEALTHCHECK_URL is required on the protected production runner" >&2
+if [[ -z "${CTOLOOP_HEALTHCHECK_URL:-}" ]]; then
+  echo "CTOLOOP_HEALTHCHECK_URL is required on the protected production runner" >&2
   exit 1
 fi
 
-curl --fail --silent --show-error "$DEPLOY_HEALTHCHECK_URL"
+curl --fail --silent --show-error "$CTOLOOP_HEALTHCHECK_URL"

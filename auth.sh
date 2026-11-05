@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${CODING_AGENT_CONFIG:-$ROOT_DIR/config.toml}"
+CONFIG_FILE="${CTOLOOP_CONFIG:-$ROOT_DIR/config.toml}"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 force_login=false
 list_only=false
@@ -11,6 +11,10 @@ selection=""
 usage() {
   echo "Usage: $0 [--list] [--force] [repository-or-number]"
   echo "Authenticate one configured repository with headless GitHub and Codex logins."
+}
+
+lowercase() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 while (($#)); do
@@ -45,10 +49,13 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   exit 1
 fi
 
-mapfile -t projects < <(
+projects=()
+while IFS= read -r project; do
+  projects+=("$project")
+done < <(
   PYTHONPATH="$ROOT_DIR/src" "$PYTHON_BIN" - "$CONFIG_FILE" <<'PY'
 import sys
-from coding_agent.config import load_settings
+from ctoloop.config import load_settings
 
 settings = load_settings(sys.argv[1])
 for index, target in enumerate(settings.repositories, start=1):
@@ -110,7 +117,7 @@ if [[ ! -x "$gh_executable" ]]; then
 fi
 
 mkdir -p -- "$auth_dir"
-chmod 700 -- "$auth_dir"
+chmod 700 "$auth_dir"
 
 current_user=""
 github_authenticated=false
@@ -118,7 +125,7 @@ if current_user="$(
   GH_CONFIG_DIR="$auth_dir" GH_PROMPT_DISABLED=1 \
     "$gh_executable" api user --jq .login 2>/dev/null
 )"; then
-  if [[ -n "$auth_user" && "${current_user,,}" != "${auth_user,,}" ]]; then
+  if [[ -n "$auth_user" && "$(lowercase "$current_user")" != "$(lowercase "$auth_user")" ]]; then
     echo "Authentication failed: saved user is $current_user; expected $auth_user." >&2
     echo "Run with --force to authenticate the expected account." >&2
     exit 1
@@ -144,14 +151,14 @@ if [[ "$github_authenticated" != true ]]; then
     GH_CONFIG_DIR="$auth_dir" GH_PROMPT_DISABLED=1 \
       "$gh_executable" api user --jq .login
   )"
-  if [[ -n "$auth_user" && "${current_user,,}" != "${auth_user,,}" ]]; then
+  if [[ -n "$auth_user" && "$(lowercase "$current_user")" != "$(lowercase "$auth_user")" ]]; then
     echo "Authentication failed: logged in as $current_user; expected $auth_user." >&2
     exit 1
   fi
 
   find "$auth_dir" -type f -exec chmod 600 {} +
   echo "Authentication saved for $repository as $current_user."
-  echo "CodingAgent will use: $auth_dir"
+  echo "CTOLoop will use: $auth_dir"
 fi
 
 if [[ -e "$checkout_dir" && ! -d "$checkout_dir" ]]; then

@@ -1,301 +1,253 @@
-# CodingAgent
+# CTOLoop
 
-`CodingAgent` is a Python service that orchestrates the locally authenticated Codex CLI for four bounded workflows: read-only Issue questions, read-only PR review, read-only CI failure diagnosis, and reviewed Issue-to-PR implementation. It does not send production credentials to Codex. Optionally, after a PR is merged, it can update a dedicated checkout and copy tracked files into a local production directory without building or restarting services.
+CTOLoop is a governed GitHub-to-Codex automation service. It connects reviewed
+GitHub work with a locally authenticated Codex CLI and keeps analysis, code
+changes, validation, publishing, and optional production synchronization inside
+explicit control boundaries.
 
-## Flow
+CTOLoop supports four primary workflows:
+
+1. Answer read-only questions raised in GitHub Issues.
+2. Review pull requests without modifying repository or GitHub state.
+3. Diagnose failed GitHub Actions runs from bounded log context.
+4. Turn an approved Issue into a validated candidate pull request.
+
+CTOLoop does not pass production credentials to Codex. Target repositories own
+their CI and deployment policies; CTOLoop only invokes the commands explicitly
+configured for each repository.
+
+## How Issue processing works
 
 1. A maintainer reviews an Issue and adds `agent:ready`.
-2. The daemon claims it with `agent:working`, removes `agent:ready`, and uses a read-only Codex run to classify the request.
-3. Questions, explanations, analysis, and brainstorming are answered directly in an Issue comment. The run finishes as `answered` without creating a branch, worktree, repository change, or PR.
-4. Requests that explicitly require repository changes continue through the implementation flow: a fresh Git worktree is created from `origin/main`.
-5. GitHub-uploaded images in the Issue body or comments are downloaded to a temporary directory and attached to the implementation `codex exec`.
-6. `codex exec` implements the smallest fix and regression tests.
-7. Protected paths are rejected and configured validation commands run.
-8. The daemon commits, pushes, and opens a PR linked to the Issue.
-9. GitHub Actions runs API, frontend, and CodingAgent CI.
-10. Optional GitHub auto-merge waits for branch protection.
-11. A successful `main` CI run may deploy through the protected `production` environment and a dedicated self-hosted runner.
+2. CTOLoop claims it with `agent:working` and removes `agent:ready`.
+3. A read-only Codex run classifies the request.
+4. Questions and analysis receive a direct Issue response without a branch or PR.
+5. Code-change requests continue in a fresh worktree based on `origin/main`.
+6. GitHub-hosted Issue images are downloaded, validated, and attached when present.
+7. Codex implements the smallest requested change and leaves it in the worktree.
+8. CTOLoop rejects protected paths and runs configured validation commands.
+9. CTOLoop commits, pushes, and opens a pull request linked to the Issue.
+10. Optional auto-merge and post-merge production synchronization remain policy-gated.
+
+## Requirements
+
+- Python 3.11 or newer
+- Git
+- GitHub CLI (`gh`)
+- Codex CLI (`codex`)
+- `pytest` for the CTOLoop test suite
+
+CTOLoop has no third-party Python runtime dependencies.
 
 ## Install
 
-Requirements: Python 3.11+, Git, GitHub CLI (`gh`), and Codex CLI. Create the environment without external runtime packages:
-
 ```bash
-cd /var/www/workspace/CodingAgent
+cd /opt/ctoloop
 python3 -m venv .venv
 .venv/bin/python -m pip install -e . pytest
 cp config.example.toml config.toml
 ```
 
-Edit `config.toml`. If `gh` is not on `PATH`, set `github.gh_executable` to its absolute path. Keep `enable_auto_merge = false` until branch protection and CI are configured.
+Edit `config.toml` before starting the service. The example intentionally uses
+placeholder repository and account names so it can be adapted without inheriting
+another deployment's paths or credentials.
 
-Then authenticate the service user once with the bundled headless login helper:
+Authenticate a configured repository and the Codex CLI:
 
 ```bash
 ./auth.sh
 ```
 
-The name and icon used in Issue comments and PR summaries can be customized under
-`[automation]` (set `agent_icon = ""` to omit the icon):
+For non-default config locations, set `CTOLOOP_CONFIG`.
 
-```toml
-[automation]
-agent_name = "CodingAgent"
-agent_icon = "🤖"
-```
+## Configuration
 
-## Multiple repositories
-
-Shared GitHub labels, credentials, Codex settings, and automation policy are configured once. Add one `[[repositories]]` entry for every local checkout:
+Shared GitHub labels, Codex settings, scheduling, and automation policy are
+configured once. Add one `[[repositories]]` entry per target repository:
 
 ```toml
 [github]
 ready_label = "agent:ready"
-gh_executable = "gh"
+working_label = "agent:working"
+pr_label = "agent:pr-open"
+failed_label = "agent:failed"
 
 [scheduler]
 poll_seconds = 60
 max_parallel_repositories = 2
 
 [[repositories]]
-repository = "unsungb/base-all"
-path = "/var/www/workspace/base-all"
+repository = "your-org/your-repo"
+path = "state/repositories/your-org/your-repo"
 base_branch = "main"
-worktree_root = "/tmp/base-all-coding-agent"
-
-[[repositories.validation]]
-name = "tests"
-argv = ["/var/www/workspace/base-all/.venv/bin/python", "-m", "pytest", "-q"]
-
-[[repositories]]
-repository = "your-org/another-repo"
-path = "/var/www/workspace/another-repo"
-base_branch = "main"
-worktree_root = "/tmp/another-repo-coding-agent"
+branch_prefix = "codex/issue-"
+worktree_root = "/tmp/your-repo-ctoloop"
+git_user_name = "CTOLoop"
+git_user_email = "ctoloop@example.com"
 
 [repositories.github]
-ready_label = "agent:approved" # optional override for this repository
+auth_user = "your-github-user"
+auth_config_dir = "state/github-auth/your-repo"
 
 [[repositories.validation]]
 name = "tests"
-argv = ["npm", "test"]
+argv = ["python3", "-m", "pytest", "-q"]
+timeout_seconds = 1200
 ```
 
-Each repository must have a unique `path` and `worktree_root`, and its `origin` must match the configured `owner/repository`. Issues within one repository run serially to avoid Git locks; different repositories run concurrently up to `scheduler.max_parallel_repositories`. The old single-repository `[repository]` configuration remains supported.
+Each repository must have a unique `path` and `worktree_root`, and its `origin`
+must resolve to the configured `owner/repository`. Work within a repository is
+serialized to avoid Git lock conflicts. Different repositories run concurrently
+up to `scheduler.max_parallel_repositories`.
 
-### Per-repository GitHub authentication
+The legacy single-repository TOML shape remains readable, but new installations
+should use `[[repositories]]`.
 
-Each repository can select a stored GitHub CLI account without changing the
-globally active account:
+### Repository-specific GitHub authentication
+
+Each target can use an isolated GitHub CLI credential directory:
 
 ```toml
-[[repositories]]
-repository = "unsungb/base-all"
-path = "/var/www/workspace/base-all"
-
 [repositories.github]
-auth_user = "unsungb"
-auth_config_dir = "state/github-auth/base-all"
+auth_user = "your-github-user"
+auth_config_dir = "state/github-auth/your-repo"
 ```
 
-Authenticate or verify a repository on a headless server with the interactive
-project selector. The helper first verifies that repository's isolated GitHub
-credentials, then verifies the shared Codex CLI credentials:
-
-```bash
-./auth.sh
-```
-
-It can also be selected directly by number or repository name:
+Select a project interactively or by repository name:
 
 ```bash
 ./auth.sh --list
-./auth.sh unsungb/base-all
-./auth.sh --force unsungb/base-all
+./auth.sh your-org/your-repo
+./auth.sh --force your-org/your-repo
 ```
 
-After GitHub authentication, the helper clones a missing repository into its
-configured `path`. The recommended layout is
-`CodingAgent/state/repositories/<owner>/<repository>`; `state/` is ignored by Git.
-An existing Git checkout is retained, while a non-empty non-Git directory is
-rejected to avoid overwriting files.
+When the configured checkout is missing, `auth.sh` clones it after authentication.
+A non-empty directory that is not a Git checkout is rejected rather than overwritten.
 
-When authentication is needed, the script displays the GitHub or Codex device URL
-and one-time code. Open the URL on another device and complete the login. GitHub
-credentials are saved under that repository's `auth_config_dir`, which should
-remain inside the ignored `state/` directory. Codex credentials use the Codex
-CLI's normal credential store. `--force` starts both login flows again when valid
-credentials already exist.
-
-For service deployments, a dedicated token environment variable can be used
-instead. Store only its variable name in TOML, never the token value:
+For service deployments, a token can be supplied through a named environment
+variable. Store the variable name in TOML, never the token value:
 
 ```toml
 [repositories.github]
-token_env = "BASE_ALL_GITHUB_TOKEN"
+token_env = "YOUR_REPO_GITHUB_TOKEN"
 ```
 
-The selected credential and GitHub CLI configuration are isolated per worker and
-are used for GitHub API calls,
-Issue images, and authenticated Git fetch/push/clone operations. This remains safe
-when repositories run concurrently.
+## Commands
 
-To update a local production checkout after its PR is merged, set
-`production_path` on that repository:
+```bash
+.venv/bin/ctoloop doctor
+.venv/bin/ctoloop bootstrap
+.venv/bin/ctoloop once
+.venv/bin/ctoloop once --repository your-org/your-repo
+.venv/bin/ctoloop patch-issue --repository your-org/your-repo --issue 123
+.venv/bin/ctoloop review-pr --repository your-org/your-repo --pr 123
+.venv/bin/ctoloop diagnose-ci --repository your-org/your-repo --run-id 456
+.venv/bin/ctoloop diagnose-ci --repository your-org/your-repo --pr 123
+.venv/bin/ctoloop update --repository your-org/your-repo
+.venv/bin/ctoloop history
+.venv/bin/ctoloop watch
+```
+
+`bootstrap` verifies prerequisites, creates or updates the four workflow labels,
+and prepares worktree roots.
+
+`review-pr` and `diagnose-ci` always force a read-only sandbox and disable
+approvals, regardless of the implementation settings. Use `--json` for the
+schema-validated result or `--publish` to add the rendered report to a PR.
+
+`patch-issue` runs the same isolated implementation path used by automatic Issue
+polling. The Issue must carry the configured ready label.
+
+## Continuous operation
+
+For a foreground-independent local process:
+
+```bash
+./start.sh
+./stop.sh
+```
+
+Runtime paths can be overridden with:
+
+- `CTOLOOP_CONFIG`
+- `CTOLOOP_PID_FILE`
+- `CTOLOOP_LOG_FILE`
+- `CTOLOOP_STOP_TIMEOUT`
+- `CTOLOOP_SYSTEMD_UNIT`
+
+For systemd, review the installation paths and writable directories in the unit,
+then install it:
+
+```bash
+sudo cp systemd/ctoloop.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ctoloop
+sudo journalctl -u ctoloop -f
+```
+
+The supplied unit expects CTOLoop at `/opt/ctoloop`. Its privileged
+`ExecStartPre` disables Ubuntu's AppArmor unprivileged-user-namespace restriction
+so the Codex `workspace-write` sandbox can initialize. This host-wide setting is
+appropriate only on a dedicated host or VM.
+
+## Production synchronization
+
+A repository can optionally synchronize merged code into a local production
+directory:
 
 ```toml
 [[repositories]]
-repository = "unsungb/base-all"
-path = "/var/www/workspace/base-all"
-base_branch = "main"
-worktree_root = "/tmp/base-all-coding-agent"
-production_path = "/srv/coding-agent-production"
-production_checkout_path = "/srv/coding-agent-production-checkout"
+repository = "your-org/your-repo"
+path = "state/repositories/your-org/your-repo"
+production_path = "/srv/your-repo"
+production_checkout_path = "/srv/your-repo-checkout"
 ```
 
-On each polling cycle, merged PRs are detected through GitHub. The production
-checkout is created automatically when needed, then updated with `git fetch` and
-`git merge --ff-only origin/<base_branch>`. Only Git-tracked files are copied to
-`production_path`; untracked runtime files such as `.env.local`, `.secrets`,
-`node_modules`, and `.next` are preserved. Files removed from Git between deployed
-commits are removed from production. Open PRs remain pending, and closed unmerged
-PRs are never synchronized.
+CTOLoop fast-forwards the dedicated checkout and copies only Git-tracked files.
+Untracked runtime content such as environment files, dependency directories, and
+build caches remains untouched. Files removed from Git are removed from the
+production destination.
 
-Optional post-sync commands can run in `production_path` after the merged files
-are copied. Commands run in order as argv arrays; no shell expansion is applied.
-If no commands are configured, this step is skipped. A failure prevents the run
-from being marked `production-updated`, so commands should be idempotent because
-the next polling cycle retries them:
+Optional post-sync commands run in order after files are copied:
 
 ```toml
 [[repositories.production_commands]]
-name = "build-frontend"
+name = "build"
 argv = ["npm", "run", "build"]
 timeout_seconds = 1800
 
 [[repositories.production_commands]]
-name = "restart-service"
-argv = ["systemctl", "--user", "restart", "my-app.service"]
+name = "restart"
+argv = ["systemctl", "--user", "restart", "your-app.service"]
 timeout_seconds = 120
 ```
 
-The packaged systemd unit uses `NoNewPrivileges=true`, so these commands cannot
-use `sudo` to become root. Use services owned by the CodingAgent user, or expose
-a separately reviewed and tightly scoped deployment mechanism when privileged
-operations are required.
+Commands are argv arrays, not shell strings. They should be idempotent because a
+failed production update is retried on a later polling cycle.
 
-## Initialize and run
+The optional protected-runner helper at `scripts/deploy-production.sh` uses these
+environment variables:
 
-```bash
-.venv/bin/coding-agent doctor
-.venv/bin/coding-agent bootstrap
-.venv/bin/coding-agent review-pr --repository unsungb/base-all --pr 123
-.venv/bin/coding-agent diagnose-ci --repository unsungb/base-all --run-id 456
-.venv/bin/coding-agent diagnose-ci --repository unsungb/base-all --pr 123
-.venv/bin/coding-agent patch-issue --repository unsungb/base-all --issue 123
-.venv/bin/coding-agent once
-.venv/bin/coding-agent once --issue 123
-.venv/bin/coding-agent once --repository unsungb/base-all
-.venv/bin/coding-agent once --repository unsungb/base-all --issue 123
-.venv/bin/coding-agent update --repository unsungb/base-all
-.venv/bin/coding-agent watch
-```
-
-### Phase-one workflows
-
-`review-pr` fetches PR metadata and its diff, then runs Codex with a read-only
-sandbox and a JSON Schema for stable review results. It prints a Markdown report
-without changing GitHub state. Add `--json` for machine-readable output, or
-`--publish` to post the Markdown report as a PR comment:
-
-```bash
-.venv/bin/coding-agent review-pr --repository unsungb/base-all --pr 123 --publish
-.venv/bin/coding-agent review-pr --repository unsungb/base-all --pr 123 --json
-```
-
-`diagnose-ci` fetches failed GitHub Actions logs and classifies the failure as a
-code, test, flaky, infrastructure, or unknown failure. Supply a run ID directly,
-or supply a PR number to select the latest failed run for its head commit. Publishing
-requires a PR target:
-
-```bash
-.venv/bin/coding-agent diagnose-ci --repository unsungb/base-all --run-id 456
-.venv/bin/coding-agent diagnose-ci --repository unsungb/base-all --pr 123 --publish
-.venv/bin/coding-agent diagnose-ci --repository unsungb/base-all --pr 123 --json
-```
-
-Both analysis commands force `read-only` and `never` approval settings regardless
-of the write-capable Issue configuration. PR data and CI logs are treated as
-untrusted input and are size-bounded before being sent to Codex.
-
-`patch-issue` is the explicit one-Issue entry point for the existing candidate
-patch workflow. It requires the same maintainer review, author allowlist, protected
-path checks, validation commands, and isolated worktree controls as `once --issue`.
-
-For the configured `base-all` repository, the same manual production update is
-available through `./update.sh`. It clones the dedicated production checkout when
-missing, fast-forwards its configured base branch, and copies only tracked files
-to the production path.
-
-`bootstrap` creates or updates the four workflow labels in every configured repository. An Issue is processed only after a maintainer adds `agent:ready`. Natural-language requests do not need a command prefix. A read-only question is answered in the Issue and has `agent:working` removed; an implementation request proceeds to a PR. On failure it receives `agent:failed`; fix the service problem and re-add `agent:ready` to retry. With multiple repositories, `--issue` must be paired with `--repository` because Issue numbers are repository-local.
-
-## Run continuously
-
-Review `systemd/coding-agent.service`, then install it as root:
-
-```bash
-sudo cp systemd/coding-agent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now coding-agent
-sudo journalctl -u coding-agent -f
-```
-
-On Ubuntu systems that enable AppArmor's unprivileged user-namespace
-restriction, the unit's privileged `ExecStartPre` automatically sets
-`kernel.apparmor_restrict_unprivileged_userns=0` before the unprivileged agent
-starts. This is required for the Codex `workspace-write` bubblewrap sandbox to
-initialize its isolated loopback interface. `doctor` verifies the setting and
-stops startup with an actionable error if the prerequisite was not applied.
-This kernel setting affects all users, so run CodingAgent on a dedicated host
-or VM rather than a shared multi-user server.
-
-The service uses an isolated worktree for each repository and stores repository-qualified run metadata in `state/runs.sqlite3`. Existing single-repository databases are upgraded automatically. Full Codex JSONL output stays in the process journal; configure normal journal retention and access controls.
-
-## GitHub protection
-
-Before auto-merge, protect `main` and require these checks:
-
-- `api`
-- `frontend`
-- `coding-agent`
-
-The current frontend intentionally sets `typescript.ignoreBuildErrors = true` and has pre-existing full-project TypeScript errors. CI therefore runs the checked-in Node unit tests but does not claim that full `tsc --noEmit` is clean.
-
-Require at least one human review for security, contract, migration, payment, authentication, and deployment changes. The default protected-path rules prevent the agent from editing workflow files, this orchestrator, and common secret files.
-
-## Production deployment
-
-The deployment workflow is disabled unless the repository variable `ENABLE_PRODUCTION_DEPLOY` equals `true`. It additionally requires:
-
-- a self-hosted runner labeled `coding-agent-production`;
-- a protected GitHub Environment named `production` with required reviewers;
-- `DEPLOY_RESTART_COMMAND` configured as a repository/environment variable;
-- `DEPLOY_HEALTHCHECK_URL` configured as a repository/environment variable.
-
-The checked-in deployment script only fast-forwards to `origin/main`, builds the frontend, invokes the configured process-manager restart hook, and verifies health. Rollback remains an explicit operator action because database and blockchain changes may not be safely reversible.
-
-The optional per-repository production synchronization only updates tracked files
-after GitHub reports the PR as merged. It does not build, migrate, restart services,
-or run deployment hooks.
+- `CTOLOOP_DEPLOY_ROOT`
+- `CTOLOOP_BASE_BRANCH` (defaults to `main`)
+- `CTOLOOP_BUILD_COMMAND`
+- `CTOLOOP_RESTART_COMMAND`
+- `CTOLOOP_HEALTHCHECK_URL`
 
 ## Security model
 
-- Issue text and comments are treated as untrusted input in the Codex prompt.
-- Only GitHub-hosted Issue image URLs are downloaded. Redirect hosts, image signatures, counts, and byte sizes are validated; temporary files are removed after each run.
-- Codex runs with `workspace-write`, no interactive approvals, and no production environment injection.
-- Validation commands are argv arrays, not shell strings.
-- Every configured local `origin` is checked against its GitHub `owner/repository` before processing.
-- Production synchronization uses a separate checkout with the expected branch, matching origin, and fast-forward-only updates.
-- Only the orchestrator performs GitHub writes.
-- Production secrets are available only to the protected deployment job after approval.
-- Do not use a GitHub personal token with broader scopes than required, and prefer a dedicated machine account or GitHub App for long-term operation.
+- Issue, PR, workflow-log, and attachment content is treated as untrusted input.
+- Analysis workflows run read-only with approval requests disabled.
+- Implementation runs are isolated in fresh Git worktrees.
+- Only the orchestrator performs GitHub writes, commits, pushes, and PR creation.
+- Protected path patterns are checked before validation and publishing.
+- Validation and post-sync commands use argv arrays without shell expansion.
+- GitHub attachments are restricted by host, HTTPS, size, count, and file signature.
+- Cross-host image redirects do not receive the GitHub authorization header.
+- Every local `origin` is verified against its configured GitHub repository.
+- Production updates are fast-forward-only and require the expected base branch.
+- Run state is stored in `state/runs.sqlite3` with repository-qualified records.
+
+Use a dedicated machine account or narrowly scoped GitHub App/token for long-term
+operation. Keep auto-merge disabled until branch protection and required checks
+are configured in each target repository.

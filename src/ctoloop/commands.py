@@ -1,3 +1,5 @@
+"""Safe subprocess helpers used by CTOLoop."""
+
 from __future__ import annotations
 
 import glob

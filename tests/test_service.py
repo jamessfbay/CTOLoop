@@ -4,12 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from coding_agent.commands import expand_argv_globs
-from coding_agent.config import load_settings
-from coding_agent.github import (
+from ctoloop.commands import expand_argv_globs
+from ctoloop.config import load_settings
+from ctoloop.github import (
     GitHub, Issue, PullRequest, PullRequestStatus, WorkflowRun,
 )
-from coding_agent.service import AgentError, CodingAgentService
+from ctoloop.service import AgentError, CTOLoopService
 
 
 def settings():
@@ -32,16 +32,16 @@ def test_parse_issue():
 
 
 @pytest.mark.parametrize("remote", (
-    "https://github.com/unsungb/base-all.git",
-    "git@github.com:unsungb/base-all.git",
-    "ssh://git@github.com/unsungb/base-all",
+    "https://github.com/your-org/your-repo.git",
+    "git@github.com:your-org/your-repo.git",
+    "ssh://git@github.com/your-org/your-repo",
 ))
 def test_github_remote_repository_parsing(remote):
-    assert CodingAgentService(settings())._github_repository_from_remote(remote) == "unsungb/base-all"
+    assert CTOLoopService(settings())._github_repository_from_remote(remote) == "your-org/your-repo"
 
 
 def test_protected_paths_are_rejected():
-    service = CodingAgentService(settings())
+    service = CTOLoopService(settings())
     with pytest.raises(AgentError, match="protected paths"):
         service._check_protected_paths((".github/workflows/evil.yml",))
 
@@ -57,7 +57,7 @@ agent_icon = "🛠️"
 repository = "org/repo"
 path = "/srv/repo"
 ''')
-    service = CodingAgentService(load_settings(config))
+    service = CTOLoopService(load_settings(config))
     assert service.workers[0].agent_identity == "🛠️ Fixer"
 
 
@@ -70,7 +70,7 @@ repository = "org/repo"
 path = "/srv/repo"
 production_path = "{production_path}"
 ''')
-    service = CodingAgentService(load_settings(config))
+    service = CTOLoopService(load_settings(config))
     worker = service.workers[0]
     run_id = service.state.start("org/repo", 7, "codex/issue-7")
     pr_url = "https://github.com/org/repo/pull/8"
@@ -110,14 +110,14 @@ argv = ["npm", "run", "build"]
 name = "restart"
 argv = ["systemctl", "restart", "example.service"]
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
     calls = []
 
     def fake_run(argv, **kwargs):
         calls.append((tuple(argv), kwargs["cwd"]))
         return SimpleNamespace(stdout="")
 
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
 
     assert worker._run_production_commands(production_path) == ("build", "restart")
     assert calls == [
@@ -139,7 +139,7 @@ base_branch = "main"
 production_path = "{production_path}"
 production_checkout_path = "{checkout_path}"
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
     calls = []
 
     monkeypatch.setattr(
@@ -151,7 +151,7 @@ production_checkout_path = "{checkout_path}"
         calls.append((tuple(argv), kwargs["cwd"]))
         return SimpleNamespace(stdout="old123\n")
 
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
     monkeypatch.setattr(
         worker, "_update_production_checkout",
         lambda path: calls.append(("update", path)) or "new123",
@@ -174,26 +174,26 @@ production_checkout_path = "{checkout_path}"
 
 
 def test_step_message_has_consistent_heading():
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     assert worker.step_message("Validate changes", "Running tests.") == (
         "### Step: Validate changes\n\nRunning tests."
     )
 
 
 def test_step_log_includes_repository_issue_and_step(caplog):
-    worker = CodingAgentService(settings()).workers[0]
-    with caplog.at_level("INFO", logger="coding_agent.service"):
+    worker = CTOLoopService(settings()).workers[0]
+    with caplog.at_level("INFO", logger="ctoloop.service"):
         worker.log_step(12, "Validate changes", "running api-tests")
-    assert "unsungb/base-all issue #12 — Step: Validate changes — running api-tests" in caplog.text
+    assert "your-org/your-repo issue #12 — Step: Validate changes — running api-tests" in caplog.text
 
 
 def test_issue_triage_uses_read_only_structured_codex(monkeypatch):
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     issue = Issue(
         number=21,
         title="How does authentication work?",
         body="Please explain the current design.",
-        url="https://github.com/unsungb/base-all/issues/21",
+        url="https://github.com/your-org/your-repo/issues/21",
         author="alice",
         labels=(worker.target.github.ready_label,),
         comments=({"author": "bob", "body": "Focus on GitHub auth."},),
@@ -233,7 +233,7 @@ repository = "org/repo"
 path = "{repository_path}"
 worktree_root = "{tmp_path / 'worktrees'}"
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
     issue = Issue(
         number=22,
         title="What does this service do?",
@@ -283,7 +283,7 @@ worktree_root = "{tmp_path / 'worktrees'}"
 
 
 def test_conversation_triage_requires_an_answer(monkeypatch):
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     issue = Issue(23, "Question", "Why?", "https://example.test/23", "alice", ())
     monkeypatch.setattr(worker, "_run_structured_codex", lambda *_args, **_kwargs: {
         "intent": "conversation", "reason": "A question.", "answer": "",
@@ -303,7 +303,7 @@ repository = "org/repo"
 path = "{repository_path}"
 worktree_root = "{tmp_path / 'worktrees'}"
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
     issue = Issue(
         number=24,
         title="Fix the greeting",
@@ -347,12 +347,12 @@ worktree_root = "{tmp_path / 'worktrees'}"
 
 
 def test_automatic_poll_skips_issue_claimed_after_listing(monkeypatch, caplog):
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     listed_issue = Issue(
         number=17,
         title="Claim race",
         body="",
-        url="https://github.com/unsungb/base-all/issues/17",
+        url="https://github.com/your-org/your-repo/issues/17",
         author="alice",
         labels=(worker.target.github.ready_label,),
     )
@@ -360,7 +360,7 @@ def test_automatic_poll_skips_issue_claimed_after_listing(monkeypatch, caplog):
         number=17,
         title="Claim race",
         body="",
-        url="https://github.com/unsungb/base-all/issues/17",
+        url="https://github.com/your-org/your-repo/issues/17",
         author="alice",
         labels=(worker.target.github.ready_label, worker.target.github.working_label),
     )
@@ -368,19 +368,19 @@ def test_automatic_poll_skips_issue_claimed_after_listing(monkeypatch, caplog):
     monkeypatch.setattr(worker.github, "list_ready", lambda: [listed_issue])
     monkeypatch.setattr(worker.github, "get_issue", lambda _number: claimed_issue)
 
-    with caplog.at_level("INFO", logger="coding_agent.service"):
+    with caplog.at_level("INFO", logger="ctoloop.service"):
         assert worker.run_once() == 0
 
     assert "issue #17 is already claimed; skipping" in caplog.text
 
 
 def test_specific_claimed_issue_still_reports_error(monkeypatch):
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     claimed_issue = Issue(
         number=17,
         title="Claimed issue",
         body="",
-        url="https://github.com/unsungb/base-all/issues/17",
+        url="https://github.com/your-org/your-repo/issues/17",
         author="alice",
         labels=(worker.target.github.working_label,),
     )
@@ -389,6 +389,23 @@ def test_specific_claimed_issue_still_reports_error(monkeypatch):
 
     with pytest.raises(AgentError, match="Issue #17 is already claimed"):
         worker.run_once(17)
+
+
+def test_specific_issue_requires_ready_label(monkeypatch):
+    worker = CTOLoopService(settings()).workers[0]
+    issue = Issue(
+        number=18,
+        title="Unreviewed issue",
+        body="",
+        url="https://github.com/your-org/your-repo/issues/18",
+        author="alice",
+        labels=(),
+    )
+    monkeypatch.setattr(worker, "sync_production_updates", lambda: 0)
+    monkeypatch.setattr(worker.github, "get_issue", lambda _number: issue)
+
+    with pytest.raises(AgentError, match="required 'agent:ready' label"):
+        worker.run_once(18)
 
 
 def test_prepare_worktree_removes_stale_local_branch(monkeypatch, tmp_path):
@@ -402,7 +419,7 @@ repository = "org/repo"
 path = "{repository_path}"
 worktree_root = "{worktree_root}"
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
     calls = []
 
     def fake_run(argv, **_kwargs):
@@ -412,7 +429,7 @@ worktree_root = "{worktree_root}"
         ) else ""
         return SimpleNamespace(stdout=stdout, returncode=0)
 
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
     worker._prepare_worktree("codex/issue-30-fix", worktree_root / "issue-30")
 
     prune_index = calls.index(("git", "worktree", "prune"))
@@ -425,7 +442,7 @@ worktree_root = "{worktree_root}"
 
 
 def test_doctor_reports_blocked_codex_user_namespace(monkeypatch):
-    service = CodingAgentService(settings())
+    service = CTOLoopService(settings())
     real_exists = Path.exists
     real_read_text = Path.read_text
 
@@ -456,7 +473,7 @@ repository = "org/repo"
 path = "/srv/repo"
 production_path = "{production_path}"
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
 
     def fake_run(argv, **_kwargs):
         outputs = {
@@ -466,7 +483,7 @@ production_path = "{production_path}"
         }
         return SimpleNamespace(stdout=outputs.get(tuple(argv), ""))
 
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
     with pytest.raises(AgentError, match="tracked local changes"):
         worker._update_production_checkout(production_path)
 
@@ -481,7 +498,7 @@ repository = "org/repo"
 path = "/srv/repo"
 production_path = "{production_path}"
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
     calls = []
 
     def fake_run(argv, **_kwargs):
@@ -494,7 +511,7 @@ production_path = "{production_path}"
         }
         return SimpleNamespace(stdout=outputs.get(tuple(argv), ""))
 
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
     assert worker._update_production_checkout(production_path) == "abc123"
     assert any(call[-3:] == ("fetch", "origin", "main") for call in calls)
     assert ("git", "merge", "--ff-only", "origin/main") in calls
@@ -512,7 +529,7 @@ def test_copy_tracked_files_preserves_runtime_files_and_removes_deleted_files(
     (production_path / "app" / "page.ts").write_text("old")
     (production_path / "removed.txt").write_text("remove me")
     (production_path / ".env.local").write_text("keep me")
-    service = CodingAgentService(settings())
+    service = CTOLoopService(settings())
     worker = service.workers[0]
 
     def fake_run(argv, **_kwargs):
@@ -522,7 +539,7 @@ def test_copy_tracked_files_preserves_runtime_files_and_removes_deleted_files(
             return SimpleNamespace(stdout="removed.txt\0")
         raise AssertionError(argv)
 
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
     worker._copy_tracked_files(checkout_path, production_path, "old123", "new123")
 
     assert (production_path / "app" / "page.ts").read_text() == "new"
@@ -538,12 +555,12 @@ def test_glob_expansion(tmp_path):
 
 
 def test_codex_receives_issue_images_and_temporary_files_are_removed(monkeypatch, tmp_path):
-    service = CodingAgentService(settings())
+    service = CTOLoopService(settings())
     issue = Issue(
         number=12,
         title="Screenshot bug",
         body="![screen](https://github.com/user-attachments/assets/example)",
-        url="https://github.com/unsungb/base-all/issues/12",
+        url="https://github.com/your-org/your-repo/issues/12",
         author="alice",
         labels=("agent:working",),
     )
@@ -551,7 +568,7 @@ def test_codex_receives_issue_images_and_temporary_files_are_removed(monkeypatch
 
     monkeypatch.setattr(service.github, "auth_token", lambda: "token-value")
     monkeypatch.setattr(
-        "coding_agent.service.extract_issue_image_urls",
+        "ctoloop.service.extract_issue_image_urls",
         lambda _body, _comments: ("https://github.com/user-attachments/assets/example",),
     )
 
@@ -567,8 +584,8 @@ def test_codex_receives_issue_images_and_temporary_files_are_removed(monkeypatch
         captured["prompt"] = kwargs["input_text"]
         return SimpleNamespace(stdout="codex output")
 
-    monkeypatch.setattr("coding_agent.service.download_issue_images", fake_download)
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.download_issue_images", fake_download)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
 
     assert service._run_codex(issue, tmp_path) == "codex output"
     image_path = captured["image_path"]
@@ -588,7 +605,7 @@ def test_structured_codex_is_read_only_and_loads_final_result(monkeypatch, tmp_p
 repository = "org/repo"
 path = "{repository_path}"
 ''')
-    worker = CodingAgentService(load_settings(config)).workers[0]
+    worker = CTOLoopService(load_settings(config)).workers[0]
     captured = {}
 
     def fake_run(argv, **kwargs):
@@ -598,7 +615,7 @@ path = "{repository_path}"
         result_path.write_text('{"summary":"ok"}')
         return SimpleNamespace(stdout='{"type":"turn.completed"}\n')
 
-    monkeypatch.setattr("coding_agent.service.run", fake_run)
+    monkeypatch.setattr("ctoloop.service.run", fake_run)
     assert worker._run_structured_codex(
         "inspect safely", {"type": "object"}, task_name="test",
     ) == {"summary": "ok"}
@@ -609,7 +626,7 @@ path = "{repository_path}"
 
 
 def test_review_pr_generates_report_and_only_publishes_when_requested(monkeypatch):
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     pull = PullRequest(
         number=42, title="Fix race", body="details", url="https://example.test/pr/42",
         author="alice", base_ref_name="main", head_ref_name="fix-race",
@@ -650,7 +667,7 @@ def test_review_pr_generates_report_and_only_publishes_when_requested(monkeypatc
 
 
 def test_diagnose_ci_uses_latest_failed_pr_run_and_can_publish(monkeypatch):
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     pull = PullRequest(
         number=7, title="Change API", body="", url="https://example.test/pr/7",
         author="alice", base_ref_name="main", head_ref_name="api-change",
@@ -689,7 +706,7 @@ def test_diagnose_ci_uses_latest_failed_pr_run_and_can_publish(monkeypatch):
 
 
 def test_diagnose_ci_publish_requires_pr(monkeypatch):
-    worker = CodingAgentService(settings()).workers[0]
+    worker = CTOLoopService(settings()).workers[0]
     workflow = WorkflowRun(
         database_id=99, name="CI", display_title="Build", conclusion="failure",
         status="completed", url="https://example.test/runs/99", head_sha="abc",
@@ -718,7 +735,7 @@ repository = "org/two"
 path = "/srv/two"
 worktree_root = "/tmp/two"
 """)
-    service = CodingAgentService(load_settings(config))
+    service = CTOLoopService(load_settings(config))
     calls = []
     monkeypatch.setattr(service.workers[1], "run_once", lambda issue=None: calls.append(issue) or 1)
 

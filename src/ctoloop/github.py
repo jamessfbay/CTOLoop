@@ -265,10 +265,10 @@ class GitHub:
 
     def ensure_labels(self) -> None:
         definitions = (
-            (self.config.ready_label, "0e8a16", "Approved for CodingAgent processing"),
-            (self.config.working_label, "fbca04", "CodingAgent is working"),
-            (self.config.pr_label, "1d76db", "CodingAgent opened a pull request"),
-            (self.config.failed_label, "d93f0b", "CodingAgent run failed"),
+            (self.config.ready_label, "0e8a16", "Approved for CTOLoop processing"),
+            (self.config.working_label, "fbca04", "CTOLoop is working"),
+            (self.config.pr_label, "1d76db", "CTOLoop opened a pull request"),
+            (self.config.failed_label, "d93f0b", "CTOLoop run failed"),
         )
         for name, color, description in definitions:
             self._gh(

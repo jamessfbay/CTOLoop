@@ -1,6 +1,6 @@
 import sqlite3
 
-from coding_agent.state import State
+from ctoloop.state import State
 
 
 def test_state_migrates_legacy_database_and_records_repository(tmp_path):

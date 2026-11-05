@@ -4,14 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from coding_agent.attachments import (
+from ctoloop.attachments import (
     AttachmentError,
     _GitHubAssetRedirectHandler,
     download_issue_images,
     extract_issue_image_urls,
 )
-from coding_agent.config import GitHubConfig
-from coding_agent.github import GitHub
+from ctoloop.config import GitHubConfig
+from ctoloop.github import GitHub
 
 
 def test_extracts_github_images_from_body_and_comments():
@@ -58,7 +58,7 @@ def test_download_validates_image_and_uses_authentication(monkeypatch, tmp_path)
             captured["timeout"] = timeout
             return Response()
 
-    monkeypatch.setattr("coding_agent.attachments.urllib.request.build_opener", lambda *_args: Opener())
+    monkeypatch.setattr("ctoloop.attachments.urllib.request.build_opener", lambda *_args: Opener())
     paths = download_issue_images(
         ("https://github.com/user-attachments/assets/example",),
         tmp_path,
@@ -137,7 +137,7 @@ def test_github_auth_user_is_resolved_without_switching_global_account(monkeypat
         calls.append((tuple(argv), kwargs))
         return SimpleNamespace(stdout="repo-token\n")
 
-    monkeypatch.setattr("coding_agent.github.run", fake_run)
+    monkeypatch.setattr("ctoloop.github.run", fake_run)
     github = GitHub(
         GitHubConfig(repository="org/repo", auth_user="repo-bot"),
         Path("/srv/repo"),
