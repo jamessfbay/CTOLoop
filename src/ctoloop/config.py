@@ -61,6 +61,19 @@ class GStackConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class SecurityAuditConfig:
+    enabled: bool = False
+    skill_root: pathlib.Path = pathlib.Path("~/.codex/skills/security-audit")
+    state_root: pathlib.Path = pathlib.Path("state/security-audits")
+    default_profile: str = "standard"
+    max_agent_invocations: int = 24
+    timeout_seconds: int = 14400
+    require_validated_output: bool = True
+    issue_label: str = "security:audit"
+    execution_policy: str = "static-only"
+
+
+@dataclasses.dataclass(frozen=True)
 class AutomationConfig:
     agent_name: str = "CTOLoop"
     agent_icon: str = "🤖"
@@ -101,6 +114,7 @@ class Settings:
     repositories: tuple[RepositoryTarget, ...]
     codex: CodexConfig
     gstack: GStackConfig
+    security_audit: SecurityAuditConfig
     automation: AutomationConfig
     scheduler: SchedulerConfig
     config_path: pathlib.Path
@@ -199,6 +213,7 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
     github_raw = raw.get("github", {})
     codex_raw = raw.get("codex", {})
     gstack_raw = raw.get("gstack", {})
+    security_audit_raw = raw.get("security_audit", {})
     auto_raw = raw.get("automation", {})
     scheduler_raw = raw.get("scheduler", {})
     codex = CodexConfig(
@@ -226,6 +241,50 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
         implementation_skills=_gstack_skills(
             gstack_raw, "implementation_skills", ("review", "health"),
         ),
+    )
+    security_skill_root = pathlib.Path(
+        security_audit_raw.get("skill_root", "~/.codex/skills/security-audit")
+    ).expanduser()
+    if not security_skill_root.is_absolute():
+        security_skill_root = config_path.parent / security_skill_root
+    security_state_root = pathlib.Path(
+        security_audit_raw.get("state_root", "state/security-audits")
+    ).expanduser()
+    if not security_state_root.is_absolute():
+        security_state_root = config_path.parent / security_state_root
+    security_profile = str(
+        security_audit_raw.get("default_profile", "standard")
+    ).strip()
+    if security_profile not in {"quick", "standard", "deep"}:
+        raise ValueError(
+            "[security_audit].default_profile must be quick, standard, or deep"
+        )
+    execution_policy = str(
+        security_audit_raw.get("execution_policy", "static-only")
+    ).strip()
+    if execution_policy != "static-only":
+        raise ValueError(
+            "[security_audit].execution_policy currently supports only static-only"
+        )
+    security_audit = SecurityAuditConfig(
+        enabled=bool(security_audit_raw.get("enabled", False)),
+        skill_root=security_skill_root.resolve(),
+        state_root=security_state_root.resolve(),
+        default_profile=security_profile,
+        max_agent_invocations=max(
+            6, int(security_audit_raw.get("max_agent_invocations", 24))
+        ),
+        timeout_seconds=max(
+            300, int(security_audit_raw.get("timeout_seconds", 14400))
+        ),
+        require_validated_output=bool(
+            security_audit_raw.get("require_validated_output", True)
+        ),
+        issue_label=(
+            str(security_audit_raw.get("issue_label", "security:audit")).strip()
+            or "security:audit"
+        ),
+        execution_policy=execution_policy,
     )
     automation = AutomationConfig(
         agent_name=str(auto_raw.get("agent_name", "CTOLoop")).strip() or "CTOLoop",
@@ -291,4 +350,7 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
         poll_seconds=max(10, int(scheduler_raw.get("poll_seconds", github_raw.get("poll_seconds", 60)))),
         max_parallel_repositories=max(1, int(scheduler_raw.get("max_parallel_repositories", 2))),
     )
-    return Settings(tuple(targets), codex, gstack, automation, scheduler, config_path)
+    return Settings(
+        tuple(targets), codex, gstack, security_audit, automation, scheduler,
+        config_path,
+    )

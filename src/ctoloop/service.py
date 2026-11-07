@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import json
 import logging
@@ -16,9 +17,10 @@ from dataclasses import dataclass
 
 from .attachments import AttachmentError, download_issue_images, extract_issue_image_urls
 from .backends import CodexBackend, ExecutionBackend, ExecutionResult, GStackBackend
-from .commands import CommandError, expand_argv_globs, resolve_executable, run, tail
+from .commands import CommandError, expand_argv_globs, resolve_executable, run, run_bytes, tail
 from .config import RepositoryTarget, Settings
 from .github import GitHub, Issue
+from .security_audit import PROFILES, SecurityAuditBackend
 from .state import State
 
 LOG = logging.getLogger(__name__)
@@ -138,6 +140,28 @@ class RepositoryWorker:
             )
             if settings.gstack.enabled else codex_backend
         )
+        security_codex = CodexBackend(
+            dataclasses.replace(
+                settings.codex,
+                timeout_seconds=settings.security_audit.timeout_seconds,
+                sandbox="workspace-write",
+                approval_policy="never",
+            ),
+            lambda *args, **kwargs: run(*args, **kwargs),
+            (
+                "mcp_servers={}",
+                "shell_environment_policy.inherit=none",
+                "sandbox_workspace_write.network_access=false",
+                "sandbox_workspace_write.writable_roots=[]",
+            ),
+        )
+        self.security_audit_backend = SecurityAuditBackend(
+            settings.security_audit,
+            security_codex,
+            target.github.repository,
+            (target.github.token_env,),
+            lambda *args, **kwargs: run_bytes(*args, **kwargs),
+        )
 
     @property
     def agent_identity(self) -> str:
@@ -186,6 +210,37 @@ class RepositoryWorker:
                         LOG.warning("%s; plain Codex fallback is enabled", message)
                     else:
                         failures.append(message)
+        if self.settings.security_audit.enabled:
+            failures.extend(self.security_audit_backend.installation_failures())
+            if not resolve_executable("node"):
+                failures.append("node executable not found (required by security audit validators)")
+            else:
+                node_version = run(
+                    ["node", "--version"],
+                    cwd=(repo if repo.is_dir() else self.settings.config_path.parent),
+                    timeout=30,
+                ).stdout.strip()
+                match = re.fullmatch(r"v?(\d+)(?:\.\d+){1,2}", node_version)
+                if not match or int(match.group(1)) < 16:
+                    failures.append(
+                        f"Node.js 16 or newer is required by security audit validators; "
+                        f"found {node_version or 'unknown'}"
+                    )
+                elif int(match.group(1)) < 18:
+                    LOG.warning(
+                        "Node.js %s can run the security audit validators, but the "
+                        "upstream validator self-tests require Node.js 18 or newer",
+                        node_version,
+                    )
+            audit_root = self.settings.security_audit.state_root
+            try:
+                audit_root.relative_to(repo)
+            except ValueError:
+                pass
+            else:
+                failures.append(
+                    f"security audit state_root must be outside the target repository: {audit_root}"
+                )
         if not failures:
             self.github.auth_status()
             run([self.settings.codex.executable, "login", "status"], cwd=repo, timeout=60)
@@ -242,7 +297,10 @@ class RepositoryWorker:
         failures = self.doctor()
         if failures:
             raise AgentError("; ".join(failures))
-        self.github.ensure_labels()
+        self.github.ensure_labels(
+            self.settings.security_audit.issue_label
+            if self.settings.security_audit.enabled else ""
+        )
         self.target.repository.worktree_root.mkdir(parents=True, exist_ok=True)
 
     def run_once(self, issue_number: int | None = None) -> int:
@@ -407,12 +465,19 @@ class RepositoryWorker:
         run_id: int | None = None,
         issue_number: int | None = None,
     ) -> None:
+        status = "fallback" if result.fell_back else "completed"
+        if (
+            result.task_name == "security-audit"
+            and isinstance(result.structured, dict)
+            and result.structured.get("status") in {"complete", "incomplete"}
+        ):
+            status = str(result.structured["status"])
         self.state.record_execution(
             repository=self.target.github.repository,
             task_name=result.task_name,
             backend=result.backend,
             requested_backend=result.requested_backend,
-            status="fallback" if result.fell_back else "completed",
+            status=status,
             skills=result.skills,
             payload=result.audit_payload(),
             run_id=run_id,
@@ -497,6 +562,97 @@ Inspect relevant repository files when useful. Identify the most likely root cau
             assert pull is not None
             self.github.comment_pr(pull.number, report)
         return json.dumps(payload, ensure_ascii=False, indent=2) if json_output else report
+
+    def security_audit(
+        self,
+        *,
+        profile: str | None = None,
+        scope_paths: tuple[str, ...] = (),
+        budget: int | None = None,
+        issue_number: int | None = None,
+        publish: bool = False,
+        json_output: bool = False,
+        run_id: int | None = None,
+    ) -> str:
+        if not self.settings.security_audit.enabled:
+            raise AgentError("[security_audit].enabled must be true")
+        if publish and issue_number is None:
+            raise AgentError("Publishing a security audit requires an Issue number")
+        invalid_scope = [
+            value for value in scope_paths
+            if not value or pathlib.PurePosixPath(value).is_absolute()
+            or ".." in pathlib.PurePosixPath(value).parts
+        ]
+        if invalid_scope:
+            raise AgentError("Security audit scope paths must be repository-relative")
+        result = self.security_audit_backend.run(
+            target=self.target.repository.path,
+            profile=profile,
+            scope_paths=scope_paths,
+            budget=budget,
+        )
+        self._record_execution(result, run_id=run_id, issue_number=issue_number)
+        report = self._format_security_audit(result)
+        if publish:
+            assert issue_number is not None
+            self.github.comment(issue_number, report)
+        if json_output:
+            return json.dumps(result.structured, ensure_ascii=False, indent=2)
+        return report
+
+    def _format_security_audit(self, result: ExecutionResult) -> str:
+        payload = result.structured or {}
+        counts = payload.get("counts", {})
+        if not isinstance(counts, dict):
+            counts = {}
+        findings = payload.get("findings", [])
+        lines: list[str] = []
+        if isinstance(findings, list):
+            for item in findings:
+                if not isinstance(item, dict) or item.get("verdict") == "rejected":
+                    continue
+                severity = self._safe_markdown_inline(item.get("severity", ""), 30).upper()
+                prefix = f"[{severity}] " if severity else ""
+                verdict = self._safe_markdown_inline(item.get("verdict", "unknown"), 30)
+                title = self._safe_markdown_inline(
+                    item.get("title", "Untitled finding"), 300,
+                )
+                fingerprint = self._safe_markdown_inline(
+                    item.get("fingerprint", "unknown"), 200,
+                )
+                lines.append(
+                    f"- **{verdict}** — {prefix}{title} (`{fingerprint}`)"
+                )
+        findings_text = "\n".join(lines) or "- No confirmed or needs-validation findings."
+        status = str(payload.get("status", "completed"))
+        return f"""## {self.agent_identity} security audit
+
+- Status: **{status}**
+- Source: `{payload.get('source_ref', 'unknown')}`
+- Profile: `{payload.get('profile', 'unknown')}`
+- Output validation: **{'passed' if payload.get('validated') else 'not required'}**
+
+### Verdict counts
+
+- Confirmed: **{counts.get('confirmed', 0)}**
+- Needs validation: **{counts.get('needs_validation', 0)}**
+- Rejected: **{counts.get('rejected', 0)}**
+
+### Findings requiring attention
+
+{findings_text}
+
+_The audit used Cloudflare's security-audit skill in static-only mode. It did not
+execute target-controlled code, use external networking, modify the repository,
+or publish from inside the agent. Full validated artifacts are retained by the
+CTOLoop host for this run._
+"""
+
+    @staticmethod
+    def _safe_markdown_inline(value: object, limit: int) -> str:
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value)).strip()[:limit]
+        text = text.replace("@", "@\u200b")
+        return re.sub(r"([\\`*_{}\[\]()<>#+.!|])", r"\\\1", text)
 
     def _format_pr_review(
         self, pr_number: int, url: str, payload: dict[str, object],
@@ -695,6 +851,11 @@ _Generated by a read-only Codex run; it did not rerun jobs or modify repository 
         issue = self.github.get_issue(issue.number)
         if self.target.github.working_label in issue.labels:
             raise IssueAlreadyClaimed(f"Issue #{issue.number} is already claimed")
+        if (
+            self.settings.security_audit.enabled
+            and self.settings.security_audit.issue_label in issue.labels
+        ):
+            return self._process_security_audit_issue(issue)
 
         slug = re.sub(r"[^a-z0-9]+", "-", issue.title.lower()).strip("-")[:40] or "fix"
         branch = f"{self.target.repository.branch_prefix}{issue.number}-{slug}"
@@ -861,6 +1022,62 @@ _Generated by a read-only Codex run; it did not rerun jobs or modify repository 
                         ["git", "branch", "-D", branch],
                         cwd=self.target.repository.path, check=False,
                     )
+
+    def _process_security_audit_issue(self, issue: Issue) -> str:
+        run_id = self.state.start(
+            self.target.github.repository, issue.number, "security-audit",
+        )
+        claimed = False
+        try:
+            self.github.labels(
+                issue.number,
+                add=(self.target.github.working_label,),
+                remove=tuple(
+                    label for label in (
+                        self.target.github.ready_label,
+                        self.target.github.failed_label,
+                    ) if label in issue.labels
+                ),
+            )
+            claimed = True
+            self.github.comment(
+                issue.number,
+                self.step_message(
+                    "Security audit",
+                    f"{self.agent_identity} claimed this event and started an unattended "
+                    f"`{self.settings.security_audit.default_profile}` static-only audit.",
+                ),
+            )
+            report = self.security_audit(
+                issue_number=issue.number,
+                run_id=run_id,
+            )
+            self.github.comment(issue.number, report)
+            self.github.labels(
+                issue.number, remove=(self.target.github.working_label,),
+            )
+            self.state.finish(run_id, "security-audit-finished", tail(report, 20000))
+            return issue.url
+        except Exception as exc:
+            self.state.finish(run_id, "failed", str(exc))
+            if claimed:
+                try:
+                    self.github.labels(
+                        issue.number,
+                        add=(self.target.github.failed_label,),
+                        remove=(self.target.github.working_label,),
+                    )
+                    self.github.comment(
+                        issue.number,
+                        self.step_message(
+                            "Failed — Security audit",
+                            "❌ The security audit did not produce a validated terminal "
+                            f"artifact set.\n\n```text\n{tail(str(exc), 3000)}\n```",
+                        ),
+                    )
+                except Exception:
+                    LOG.exception("Could not report security audit failure to GitHub")
+            raise
 
     def _triage_issue(self, issue: Issue) -> dict[str, str]:
         comments = "\n\n".join(
@@ -1143,7 +1360,10 @@ class CTOLoopService:
         if failures:
             raise AgentError("; ".join(failures))
         for worker in self.workers:
-            worker.github.ensure_labels()
+            worker.github.ensure_labels(
+                self.settings.security_audit.issue_label
+                if self.settings.security_audit.enabled else ""
+            )
             worker.target.repository.worktree_root.mkdir(parents=True, exist_ok=True)
 
     def run_once(self, issue_number: int | None = None, repository: str | None = None) -> int:
@@ -1206,6 +1426,34 @@ class CTOLoopService:
             raise AgentError("--repository is required when multiple repositories are configured")
         return worker.diagnose_ci(
             run_id, pr_number=pr_number, publish=publish, json_output=json_output,
+        )
+
+    def security_audit(
+        self,
+        repository: str | None = None,
+        *,
+        profile: str | None = None,
+        scope_paths: tuple[str, ...] = (),
+        budget: int | None = None,
+        issue_number: int | None = None,
+        publish: bool = False,
+        json_output: bool = False,
+    ) -> str:
+        if profile is not None and profile not in PROFILES:
+            raise AgentError(f"Unknown security audit profile: {profile}")
+        if repository:
+            worker = self._worker(repository)
+        elif len(self.workers) == 1:
+            worker = self.workers[0]
+        else:
+            raise AgentError("--repository is required when multiple repositories are configured")
+        return worker.security_audit(
+            profile=profile,
+            scope_paths=scope_paths,
+            budget=budget,
+            issue_number=issue_number,
+            publish=publish,
+            json_output=json_output,
         )
 
     def watch(self) -> None:

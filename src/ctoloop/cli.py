@@ -64,6 +64,33 @@ def parser() -> argparse.ArgumentParser:
     diagnose.add_argument(
         "--json", action="store_true", help="Print the schema-validated JSON result",
     )
+    audit = sub.add_parser(
+        "security-audit",
+        help="Run Cloudflare's multi-phase security audit in static-only mode",
+    )
+    audit.add_argument(
+        "--repository", help="Limit auditing to one configured owner/repository",
+    )
+    audit.add_argument(
+        "--profile", choices=("quick", "standard", "deep"),
+        help="Audit profile (default: configured profile)",
+    )
+    audit.add_argument(
+        "--scope", action="append", default=[], metavar="PATH",
+        help="Repository-relative scope path; repeat for multiple paths",
+    )
+    audit.add_argument(
+        "--budget", type=int, help="Maximum number of delegated agent invocations",
+    )
+    audit.add_argument(
+        "--issue", type=int, help="GitHub Issue to associate with this audit",
+    )
+    audit.add_argument(
+        "--publish", action="store_true", help="Post the audit summary to --issue",
+    )
+    audit.add_argument(
+        "--json", action="store_true", help="Print machine-readable audit metadata",
+    )
     update = sub.add_parser(
         "update", help="Fast-forward a production checkout and copy tracked files",
     )
@@ -107,6 +134,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "diagnose-ci":
             print(service.diagnose_ci(
                 args.run_id, args.repository, pr_number=args.pr, publish=args.publish,
+                json_output=args.json,
+            ))
+        elif args.command == "security-audit":
+            print(service.security_audit(
+                args.repository,
+                profile=args.profile,
+                scope_paths=tuple(args.scope),
+                budget=args.budget,
+                issue_number=args.issue,
+                publish=args.publish,
                 json_output=args.json,
             ))
         elif args.command == "update":

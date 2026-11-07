@@ -67,3 +67,24 @@ def run(
     if check and result.returncode:
         raise CommandError(argv, result.returncode, result.stdout)
     return result
+
+
+def run_bytes(
+    argv: Sequence[str],
+    *,
+    cwd: pathlib.Path,
+    timeout: int = 300,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a command without decoding stdout, for trusted binary Git objects."""
+    LOG.debug("run bytes: %s (cwd=%s)", shlex_join(argv), cwd)
+    result = subprocess.run(
+        list(argv), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=timeout, env=env or os.environ.copy(), check=False,
+    )
+    if check and result.returncode:
+        raise CommandError(
+            argv, result.returncode, result.stdout.decode("utf-8", errors="replace"),
+        )
+    return result

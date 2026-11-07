@@ -263,13 +263,19 @@ class GitHub:
             args.append("--delete-branch")
         self._gh(*args, timeout=180)
 
-    def ensure_labels(self) -> None:
-        definitions = (
+    def ensure_labels(self, security_audit_label: str = "") -> None:
+        definitions = [
             (self.config.ready_label, "0e8a16", "Approved for CTOLoop processing"),
             (self.config.working_label, "fbca04", "CTOLoop is working"),
             (self.config.pr_label, "1d76db", "CTOLoop opened a pull request"),
             (self.config.failed_label, "d93f0b", "CTOLoop run failed"),
-        )
+        ]
+        if security_audit_label:
+            definitions.append((
+                security_audit_label,
+                "b60205",
+                "Request an unattended CTOLoop security audit",
+            ))
         for name, color, description in definitions:
             self._gh(
                 "label", "create", name, "--color", color,

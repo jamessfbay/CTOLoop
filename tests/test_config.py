@@ -21,6 +21,56 @@ def test_load_example_config():
     assert settings.scheduler.max_parallel_repositories == 2
     assert settings.gstack.enabled is False
     assert settings.gstack.implementation_skills == ("review", "health")
+    assert settings.security_audit.enabled is False
+    assert settings.security_audit.default_profile == "standard"
+
+
+def test_load_security_audit_config(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('''
+[security_audit]
+enabled = true
+skill_root = "skills/security-audit"
+state_root = "state/audits"
+default_profile = "deep"
+max_agent_invocations = 40
+timeout_seconds = 7200
+require_validated_output = false
+issue_label = "security:deep-audit"
+execution_policy = "static-only"
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    settings = load_settings(config)
+    audit = settings.security_audit
+    assert audit.enabled is True
+    assert audit.skill_root == (tmp_path / "skills/security-audit").resolve()
+    assert audit.state_root == (tmp_path / "state/audits").resolve()
+    assert audit.default_profile == "deep"
+    assert audit.max_agent_invocations == 40
+    assert audit.timeout_seconds == 7200
+    assert audit.require_validated_output is False
+    assert audit.issue_label == "security:deep-audit"
+
+
+@pytest.mark.parametrize("key,value", (
+    ("default_profile", "unbounded"),
+    ("execution_policy", "host-exec"),
+))
+def test_rejects_unsafe_security_audit_config(tmp_path, key, value):
+    config = tmp_path / "config.toml"
+    config.write_text(f'''
+[security_audit]
+{key} = "{value}"
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    with pytest.raises(ValueError, match="security_audit"):
+        load_settings(config)
 
 
 def test_load_gstack_pipeline_with_extended_stages(tmp_path):

@@ -92,9 +92,15 @@ class ExecutionBackend(Protocol):
 class CodexBackend:
     name = "codex"
 
-    def __init__(self, config: CodexConfig, runner: RunCommand):
+    def __init__(
+        self,
+        config: CodexConfig,
+        runner: RunCommand,
+        config_overrides: Sequence[str] = (),
+    ):
         self.config = config
         self.runner = runner
+        self.config_overrides = tuple(config_overrides)
 
     def _argv(
         self,
@@ -113,6 +119,8 @@ class CodexBackend:
         ]
         if self.config.model:
             argv.extend(["--model", self.config.model])
+        for override in self.config_overrides:
+            argv.extend(["--config", override])
         argv.extend(["exec", "--ephemeral", "--json"])
         if schema_path and result_path:
             argv.extend([

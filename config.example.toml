@@ -66,6 +66,23 @@ implementation_skills = ["review", "health"]
 # Longer opt-in pipeline with browser, security, and plan review stages:
 # implementation_skills = ["plan-eng-review", "review", "health", "qa", "cso"]
 
+# Optional Cloudflare security-audit-skill integration. Install the skill first:
+# npx skills add https://github.com/cloudflare/security-audit-skill \
+#   --skill security-audit --global
+#
+# Add both `security:audit` and `agent:ready` to an Issue to trigger a full,
+# unattended audit. Static-only mode deliberately never executes target code.
+[security_audit]
+enabled = false
+skill_root = "~/.codex/skills/security-audit"
+state_root = "state/security-audits"
+default_profile = "standard"
+max_agent_invocations = 24
+timeout_seconds = 14400
+require_validated_output = true
+issue_label = "security:audit"
+execution_policy = "static-only"
+
 [automation]
 agent_name = "CTOLoop"
 agent_icon = "🤖"

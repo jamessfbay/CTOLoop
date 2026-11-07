@@ -167,6 +167,57 @@ fails and `fallback_to_codex` is true, CTOLoop records the fallback and continue
 with the plain Codex result. Execution metadata and bounded output tails are stored
 in `state/runs.sqlite3` under `execution_results`.
 
+### Cloudflare security audit layer
+
+CTOLoop can run Cloudflare's `security-audit` skill as a separate, heavyweight
+security workflow. It is intentionally independent from gstack: gstack remains
+the routine implementation/review layer, while this workflow produces a
+coverage ledger, independently verified findings, and a formal report.
+
+Install the skill for the Codex host:
+
+```bash
+npx skills add https://github.com/cloudflare/security-audit-skill \
+  --skill security-audit --global
+```
+
+Configure its installed directory (adjust `skill_root` if the installer uses a
+different agent skill directory):
+
+```toml
+[security_audit]
+enabled = true
+skill_root = "~/.codex/skills/security-audit"
+state_root = "state/security-audits"
+default_profile = "standard"       # quick, standard, or deep
+max_agent_invocations = 24
+timeout_seconds = 14400
+require_validated_output = true
+issue_label = "security:audit"
+execution_policy = "static-only"
+```
+
+Run an audit directly:
+
+```bash
+.venv/bin/ctoloop security-audit --repository your-org/your-repo
+.venv/bin/ctoloop security-audit --profile quick --scope src/ --json
+```
+
+For unattended event-driven operation, add both `security:audit` and
+`agent:ready` to an open Issue. CTOLoop claims the Issue, runs the audit, validates
+`coverage-ledger.json` and `findings.json` using the skill's own zero-dependency
+Node validators, stores the full artifacts below `state/security-audits/`, and
+posts a bounded summary back to the Issue.
+
+The current execution policy is deliberately `static-only`. The audit agent's
+writable root is the external run directory; the target repository stays outside
+that root and is read-only. Target-controlled builds, tests, scripts, package
+managers, browsers, fuzzers, and network access are forbidden. Findings that
+need runtime proof remain `needs_validation` instead of being overstated as
+confirmed. A future OS-isolated runner can add dynamic validation without
+weakening this default.
+
 ### Repository-specific GitHub authentication
 
 Each target can use an isolated GitHub CLI credential directory:
@@ -207,6 +258,7 @@ token_env = "YOUR_REPO_GITHUB_TOKEN"
 .venv/bin/ctoloop review-pr --repository your-org/your-repo --pr 123
 .venv/bin/ctoloop diagnose-ci --repository your-org/your-repo --run-id 456
 .venv/bin/ctoloop diagnose-ci --repository your-org/your-repo --pr 123
+.venv/bin/ctoloop security-audit --repository your-org/your-repo
 .venv/bin/ctoloop update --repository your-org/your-repo
 .venv/bin/ctoloop history
 .venv/bin/ctoloop watch
