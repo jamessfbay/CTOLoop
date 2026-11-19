@@ -64,3 +64,22 @@ def test_state_keeps_truncated_execution_payload_as_valid_json(tmp_path):
     parsed = json.loads(payload)
     assert parsed["truncated"] is True
     assert parsed["payload_tail"].endswith('"}')
+
+
+def test_state_appends_reviewable_workflow_decisions(tmp_path):
+    state = State(tmp_path / "runs.sqlite3")
+    run_id = state.start("org/repo", 9, "codex/issue-9")
+    first = state.record_decision(
+        run_id, phase="route", decision="Selected bug_fix",
+        reason="Issue describes a regression", evidence="issue #9", result="planned",
+    )
+    second = state.record_decision(
+        run_id, phase="verify", decision="Verifier passed",
+        reason="All criteria satisfied", evidence="execution 2", result="pass",
+    )
+
+    assert second > first
+    assert [row[:2] for row in state.decisions(run_id)] == [
+        ("route", "Selected bug_fix"),
+        ("verify", "Verifier passed"),
+    ]

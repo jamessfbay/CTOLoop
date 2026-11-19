@@ -18,6 +18,12 @@ CTOLoop supports four primary workflows:
 3. Diagnose failed GitHub Actions runs from bounded log context.
 4. Turn an approved Issue into a validated candidate pull request.
 
+For code changes, an optional native workflow layer adds bounded engineering
+playbooks, observable exit criteria, independent verification, and an append-only
+decision trail. This design absorbs the strongest ideas from pstack without
+depending on Cursor-only `/loop`, cloud-agent, sticky-chat, or interactive prompt
+primitives.
+
 CTOLoop does not pass production credentials to Codex. Target repositories own
 their CI and deployment policies; CTOLoop only invokes the commands explicitly
 configured for each repository.
@@ -43,15 +49,19 @@ reports that input is required instead of guessing.
 ## How event processing works
 
 1. A maintainer or upstream policy automation adds `agent:ready` to an authorized Issue.
-2. CTOLoop claims it with `agent:working` and removes `agent:ready`.
-3. A read-only Codex run classifies the request.
+2. With the durable runtime enabled, CTOLoop first persists an idempotent Issue
+   delivery job; a leased worker then claims it with `agent:working` and removes
+   `agent:ready`.
+3. A read-only Codex run classifies the request and selects its playbook.
 4. Questions and analysis receive a direct Issue response without a branch or PR.
 5. Code-change requests continue in a fresh worktree based on `origin/main`.
 6. GitHub-hosted Issue images are downloaded, validated, and attached when present.
 7. Codex implements the smallest requested change and leaves it in the worktree.
 8. CTOLoop rejects protected paths and runs configured validation commands.
 9. CTOLoop commits, pushes, and opens a pull request linked to the Issue.
-10. Optional auto-merge and post-merge production synchronization remain policy-gated.
+10. A durable watcher follows HEAD, CI, reviews, mergeability, and terminal PR
+    state across daemon restarts.
+11. Optional auto-merge and post-merge production synchronization remain policy-gated.
 
 After step 1, the normal path is fully unattended.
 
@@ -129,6 +139,149 @@ up to `scheduler.max_parallel_repositories`.
 
 The legacy single-repository TOML shape remains readable, but new installations
 should use `[[repositories]]`.
+
+### Native engineering workflow layer
+
+CTOLoop can classify each code-change Issue into one bounded playbook:
+`bug_fix`, `feature`, `refactor`, `performance`, `documentation`, or
+`maintenance`. The classification includes observable exit criteria. CTOLoop
+then owns the iteration loop and decides whether those criteria were actually
+met; an implementation agent cannot declare its own run successful.
+
+```toml
+[workflow]
+enabled = true
+independent_verifier = true
+decision_log = true
+max_iterations = 2
+implementation_model = "" # empty inherits [codex].model
+verifier_model = ""       # may be a different model
+
+[workflow.runtime]
+enabled = true
+heartbeat_seconds = 300
+lease_seconds = 900
+stalled_after_seconds = 1800
+max_recovery_attempts = 3
+max_execution_attempts = 6
+retry_backoff_seconds = 120
+poll_fallback_seconds = 600
+max_wait_hours = 72
+```
+
+The resulting code-change flow is:
+
+1. A read-only triage run chooses a playbook and at most eight exit criteria.
+2. The implementation model makes the smallest evidence-backed change in the
+   CTOLoop-owned worktree.
+3. CTOLoop checks protected paths and runs the repository's configured validation
+   commands itself.
+4. A separate read-only verifier inspects the final diff and validation evidence.
+5. `needs_changes` feedback starts another bounded implementation iteration.
+6. `pass` is accepted only when every criterion is explicitly satisfied. A
+   `needs_input` verdict stops safely instead of guessing.
+7. Only CTOLoop may commit, push, create the PR, enable auto-merge, or synchronize
+   production.
+
+`max_iterations` must be between 1 and 8. Exhausting the budget is a failed run,
+not a relaxed success. The verifier uses `sandbox = "read-only"`, approval policy
+`never`, and never receives authority to publish or mutate GitHub state.
+
+When `decision_log = true`, CTOLoop records routing, implementation checkpoints,
+validation evidence, verifier verdicts, and terminal delivery decisions in the
+SQLite `run_decisions` table. The trail is append-only; corrections create new
+records instead of rewriting history:
+
+```bash
+.venv/bin/ctoloop history --run-id 42
+```
+
+This layer complements gstack rather than replacing it. The native workflow owns
+routing, iteration, evidence, and exit decisions. gstack remains a collection of
+bounded implementation/review/health stages inside an iteration. The Cloudflare
+security audit remains a separate static-only workflow.
+
+The design is inspired by the MIT-licensed
+[pstack project](https://github.com/cursor/plugins/tree/main/pstack), especially
+its playbooks, verifiable exit conditions, author/verifier separation, and
+decision trail. CTOLoop does not vendor or execute `poteto-mode`; pstack's Cursor
+model names, `/loop`, `Task` subagents, force-push/merge behaviors, and unrestricted
+MCP assumptions are deliberately excluded.
+
+#### Durable heartbeat and watcher runtime
+
+When `[workflow]` and `[workflow.runtime]` are enabled, ready Issues are first
+inserted as durable `issue-delivery` workflows instead of being executed directly
+by the GitHub polling thread. Commit, push, and PR creation are fenced checkpoints.
+After PR creation, a separate durable `pr-lifecycle` workflow takes over. Both are
+independent from the Codex conversation that created them:
+
+```text
+queued → claimed → planned → committed → pushed → pr-created
+  ↓
+awaiting_ci
+  → ci_failed | awaiting_review | review_changes_requested
+  → merge_blocked | merge_ready
+  → completed | closed | failed
+```
+
+Every execution attempt obtains an atomic, expiring lease. A background heartbeat
+renews the lease while its handler is alive. Heartbeats and actual progress are
+tracked separately: a process that remains alive but produces no new progress is
+still recoverable after `stalled_after_seconds`. Once another worker takes the
+lease, the old owner is fenced and cannot commit a state transition.
+
+If the daemon dies after `git commit` or `git push`, the checkpoint contains the
+expected branch and commit SHA. Recovery compares the remote branch to that SHA,
+rejects mismatches, finds an existing PR idempotently, or creates the missing PR
+without rerunning implementation. A stale unpublished worktree is removed only
+while the recovering worker owns the matching Issue lease.
+
+Watchers store the last authoritative GitHub PR observation. A changed HEAD,
+check result, review state, mergeability state, or PR state creates one idempotent
+event and wakes the workflow immediately. When no external event arrives,
+`poll_fallback_seconds` provides the heartbeat-style polling fallback. Events are
+deduplicated by their key, and all verifier/CI conclusions remain associated with
+the observed PR HEAD.
+
+The daemon reconstructs the runtime entirely from SQLite after a restart. An
+expired lease is recovered automatically; repeated recoveries stop at
+`max_recovery_attempts`, while ordinary handler failures stop at
+`max_execution_attempts`. The original workflow deadline is not extended by a
+restart or a new watch, so a stuck PR cannot consume resources forever.
+
+The daemon runs a dedicated watcher thread and a durable worker pool sized by
+`scheduler.max_parallel_repositories`. Long Codex execution therefore does not
+block CI/review watchers. Repository write workflows still take the repository
+lock, while independent repositories can progress concurrently.
+
+External webhook or CI adapters can wake a registered watch without granting the
+event sender direct workflow control:
+
+```bash
+.venv/bin/ctoloop workflow-event \
+  --id 'pr:your-org/your-repo:123' \
+  --key 'github-delivery-id' \
+  --type github-pr \
+  --resource 'your-org/your-repo#123' \
+  --payload-json '{"action":"synchronize"}'
+
+.venv/bin/ctoloop workflow-status --id 'pr:your-org/your-repo:123'
+```
+
+The event payload is only a wake signal. The handler re-reads the authoritative
+PR state through GitHub before deciding a transition, so a forged payload cannot
+claim that CI passed or a PR merged.
+
+Run the complete local example to exercise real SQLite persistence, CI and review
+wake events, daemon reconstruction, and terminal merge completion:
+
+```bash
+.venv/bin/python scripts/durable-workflow-example.py
+```
+
+The example must end with `"result": "PASS"` and four durable attempts spanning
+the pre-restart and post-restart owners.
 
 ### Optional gstack workflow layer
 

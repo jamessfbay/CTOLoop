@@ -25,3 +25,20 @@ def test_diagnose_ci_can_infer_run_from_pr():
     assert args.pr == 8
     assert args.publish is True
     assert args.json is False
+
+
+def test_history_can_select_workflow_decision_trail():
+    args = parser().parse_args(["history", "--run-id", "42"])
+    assert args.command == "history"
+    assert args.run_id == 42
+
+
+def test_durable_workflow_event_arguments():
+    args = parser().parse_args([
+        "workflow-event", "--id", "pr:org/repo:7", "--key", "delivery-1",
+        "--type", "github-pr", "--resource", "org/repo#7",
+        "--payload-json", '{"action":"synchronize"}',
+    ])
+    assert args.command == "workflow-event"
+    assert args.event_type == "github-pr"
+    assert args.resource == "org/repo#7"

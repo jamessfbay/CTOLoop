@@ -66,6 +66,31 @@ implementation_skills = ["review", "health"]
 # Longer opt-in pipeline with browser, security, and plan review stages:
 # implementation_skills = ["plan-eng-review", "review", "health", "qa", "cso"]
 
+# Native, platform-independent engineering playbooks inspired by pstack. CTOLoop
+# remains the orchestrator: agents cannot commit, push, open PRs, merge, deploy,
+# or publish. When enabled, Issue triage selects a bounded playbook and exit
+# criteria, each iteration is recorded, and a separate read-only Codex run must
+# verify the final diff before CTOLoop may create a PR.
+[workflow]
+enabled = false
+independent_verifier = true
+decision_log = true
+max_iterations = 2
+# Optional role-specific model overrides. Empty uses [codex].model.
+implementation_model = ""
+verifier_model = ""
+
+[workflow.runtime]
+enabled = true
+heartbeat_seconds = 300
+lease_seconds = 900
+stalled_after_seconds = 1800
+max_recovery_attempts = 3
+max_execution_attempts = 6
+retry_backoff_seconds = 120
+poll_fallback_seconds = 600
+max_wait_hours = 72
+
 # Optional Cloudflare security-audit-skill integration. Install the skill first:
 # npx skills add https://github.com/cloudflare/security-audit-skill \
 #   --skill security-audit --global

@@ -51,6 +51,29 @@ class WorkflowRun:
     head_sha: str
 
 
+@dataclass(frozen=True)
+class PullRequestLifecycle:
+    state: str
+    head_sha: str
+    merge_state: str
+    checks: str
+    review: str
+    draft: bool
+
+    def observation(self) -> str:
+        return json.dumps({
+            "state": self.state,
+            "head_sha": self.head_sha,
+            "merge_state": self.merge_state,
+            "checks": self.checks,
+            "review": self.review,
+            "draft": self.draft,
+        }, sort_keys=True)
+
+    def payload(self) -> dict[str, object]:
+        return json.loads(self.observation())
+
+
 class GitHub:
     def __init__(self, config: GitHubConfig, cwd: pathlib.Path):
         self.config = config
@@ -209,6 +232,89 @@ class GitHub:
             base_ref_name=str(item.get("baseRefName", "")),
             head_ref_name=str(item.get("headRefName", "")),
             head_ref_oid=str(item.get("headRefOid", "")),
+        )
+
+    def find_pr_by_head(self, branch: str) -> PullRequest | None:
+        output = self._gh(
+            "pr", "list", "--state", "all", "--head", branch, "--limit", "1",
+            "--json", "number,title,body,url,author,baseRefName,headRefName,headRefOid",
+        )
+        items = json.loads(output or "[]")
+        if not items:
+            return None
+        item = items[0]
+        return PullRequest(
+            number=int(item["number"]), title=str(item.get("title", "")),
+            body=str(item.get("body", "")), url=str(item.get("url", "")),
+            author=str((item.get("author") or {}).get("login", "unknown")),
+            base_ref_name=str(item.get("baseRefName", "")),
+            head_ref_name=str(item.get("headRefName", "")),
+            head_ref_oid=str(item.get("headRefOid", "")),
+        )
+
+    def pr_lifecycle(self, number: int) -> PullRequestLifecycle:
+        output = self._gh(
+            "pr", "view", str(number), "--json",
+            "state,headRefOid,mergeStateStatus,statusCheckRollup,reviews,isDraft",
+        )
+        item = json.loads(output)
+        checks = item.get("statusCheckRollup") or []
+        failure_conclusions = {
+            "ACTION_REQUIRED", "CANCELLED", "FAILURE", "STALE",
+            "STARTUP_FAILURE", "TIMED_OUT",
+        }
+        check_results: list[str] = []
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            legacy_state = str(check.get("state", "")).upper()
+            conclusion = str(check.get("conclusion", "")).upper()
+            status = str(check.get("status", "")).upper()
+            if legacy_state:
+                if legacy_state in {"ERROR", "FAILURE"}:
+                    check_results.append("failure")
+                elif legacy_state == "SUCCESS":
+                    check_results.append("success")
+                else:
+                    check_results.append("pending")
+            elif conclusion in failure_conclusions:
+                check_results.append("failure")
+            elif status == "COMPLETED" and conclusion in {
+                "SUCCESS", "NEUTRAL", "SKIPPED",
+            }:
+                check_results.append("success")
+            else:
+                check_results.append("pending")
+        if "failure" in check_results:
+            check_state = "failure"
+        elif check_results and set(check_results) == {"success"}:
+            check_state = "success"
+        else:
+            check_state = "pending"
+
+        latest_reviews: dict[str, tuple[str, str]] = {}
+        for review in item.get("reviews") or []:
+            if not isinstance(review, dict):
+                continue
+            author = str((review.get("author") or {}).get("login", "unknown"))
+            submitted = str(review.get("submittedAt", ""))
+            state = str(review.get("state", "")).upper()
+            if author not in latest_reviews or submitted >= latest_reviews[author][0]:
+                latest_reviews[author] = (submitted, state)
+        review_states = {value[1] for value in latest_reviews.values()}
+        if "CHANGES_REQUESTED" in review_states:
+            review_state = "changes_requested"
+        elif "APPROVED" in review_states:
+            review_state = "approved"
+        else:
+            review_state = "pending"
+        return PullRequestLifecycle(
+            state=str(item.get("state", "UNKNOWN")).upper(),
+            head_sha=str(item.get("headRefOid", "")),
+            merge_state=str(item.get("mergeStateStatus", "UNKNOWN")).upper(),
+            checks=check_state,
+            review=review_state,
+            draft=bool(item.get("isDraft", False)),
         )
 
     def pr_diff(self, number: int) -> str:

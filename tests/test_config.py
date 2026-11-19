@@ -23,6 +23,9 @@ def test_load_example_config():
     assert settings.gstack.implementation_skills == ("review", "health")
     assert settings.security_audit.enabled is False
     assert settings.security_audit.default_profile == "standard"
+    assert settings.workflow.enabled is False
+    assert settings.workflow.independent_verifier is True
+    assert settings.workflow.max_iterations == 2
 
 
 def test_load_security_audit_config(tmp_path):
@@ -53,6 +56,79 @@ path = "/srv/repo"
     assert audit.timeout_seconds == 7200
     assert audit.require_validated_output is False
     assert audit.issue_label == "security:deep-audit"
+
+
+def test_load_native_workflow_config(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('''
+[workflow]
+enabled = true
+independent_verifier = true
+decision_log = true
+max_iterations = 4
+implementation_model = "implementation-model"
+verifier_model = "verification-model"
+
+[workflow.runtime]
+enabled = true
+heartbeat_seconds = 20
+lease_seconds = 60
+stalled_after_seconds = 120
+max_recovery_attempts = 4
+max_execution_attempts = 7
+retry_backoff_seconds = 5
+poll_fallback_seconds = 30
+max_wait_hours = 48
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    workflow = load_settings(config).workflow
+    assert workflow.enabled is True
+    assert workflow.independent_verifier is True
+    assert workflow.decision_log is True
+    assert workflow.max_iterations == 4
+    assert workflow.implementation_model == "implementation-model"
+    assert workflow.verifier_model == "verification-model"
+    assert workflow.runtime_enabled is True
+    assert workflow.heartbeat_seconds == 20
+    assert workflow.lease_seconds == 60
+    assert workflow.stalled_after_seconds == 120
+    assert workflow.max_recovery_attempts == 4
+    assert workflow.max_execution_attempts == 7
+    assert workflow.poll_fallback_seconds == 30
+    assert workflow.max_wait_hours == 48
+
+
+@pytest.mark.parametrize("iterations", (0, 9))
+def test_rejects_unsafe_workflow_iteration_budget(tmp_path, iterations):
+    config = tmp_path / "config.toml"
+    config.write_text(f'''
+[workflow]
+max_iterations = {iterations}
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    with pytest.raises(ValueError, match="workflow.*max_iterations"):
+        load_settings(config)
+
+
+def test_rejects_workflow_runtime_lease_shorter_than_heartbeat(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('''
+[workflow.runtime]
+heartbeat_seconds = 60
+lease_seconds = 60
+
+[[repositories]]
+repository = "org/repo"
+path = "/srv/repo"
+''')
+    with pytest.raises(ValueError, match="lease_seconds.*heartbeat_seconds"):
+        load_settings(config)
 
 
 @pytest.mark.parametrize("key,value", (

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import pathlib
@@ -98,7 +99,23 @@ def parser() -> argparse.ArgumentParser:
         "--repository", help="Update one configured owner/repository",
     )
     sub.add_parser("watch", help="Continuously poll for ready issues")
-    sub.add_parser("history", help="Show recent local run state")
+    history = sub.add_parser("history", help="Show recent run state or one run's decision trail")
+    history.add_argument(
+        "--run-id", type=int,
+        help="Show the append-only workflow decision trail for one run",
+    )
+    workflow_status = sub.add_parser(
+        "workflow-status", help="Show one durable workflow's persisted state",
+    )
+    workflow_status.add_argument("--id", required=True, help="Durable workflow ID")
+    workflow_event = sub.add_parser(
+        "workflow-event", help="Wake a waiting workflow with an idempotent external event",
+    )
+    workflow_event.add_argument("--id", required=True, help="Durable workflow ID")
+    workflow_event.add_argument("--key", required=True, help="Globally idempotent event key")
+    workflow_event.add_argument("--type", required=True, dest="event_type")
+    workflow_event.add_argument("--resource", required=True)
+    workflow_event.add_argument("--payload-json", default="{}")
     return result
 
 
@@ -152,8 +169,23 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "watch":
             service.watch()
         elif args.command == "history":
-            for row in service.state.recent():
+            rows = (
+                service.state.decisions(args.run_id)
+                if args.run_id is not None else service.state.recent()
+            )
+            for row in rows:
                 print("\t".join(str(value or "") for value in row))
+        elif args.command == "workflow-status":
+            print(service.workflow_status(args.id))
+        elif args.command == "workflow-event":
+            payload = json.loads(args.payload_json)
+            if not isinstance(payload, dict):
+                raise ValueError("--payload-json must decode to an object")
+            accepted = service.notify_workflow(
+                args.id, event_key=args.key, event_type=args.event_type,
+                resource_id=args.resource, payload=payload,
+            )
+            print(json.dumps({"accepted": accepted}))
         return 0
     except Exception as exc:
         logging.exception("CTOLoop failed: %s", exc)

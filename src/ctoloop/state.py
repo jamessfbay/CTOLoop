@@ -13,6 +13,10 @@ class State:
     def __init__(self, path: pathlib.Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.connection.execute("PRAGMA busy_timeout=5000")
+        self.connection.execute("PRAGMA foreign_keys=ON")
+        self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("PRAGMA synchronous=NORMAL")
         self.lock = threading.Lock()
         self.connection.execute(
             """CREATE TABLE IF NOT EXISTS runs (
@@ -37,6 +41,75 @@ class State:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS run_decisions (
+                id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL,
+                phase TEXT NOT NULL, decision TEXT NOT NULL,
+                reason TEXT NOT NULL, evidence TEXT NOT NULL,
+                result TEXT NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS durable_workflows (
+                id TEXT PRIMARY KEY, repository TEXT NOT NULL,
+                issue_number INTEGER, kind TEXT NOT NULL, state TEXT NOT NULL,
+                status TEXT NOT NULL, payload TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 0,
+                recovery_attempts INTEGER NOT NULL DEFAULT 0,
+                lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT,
+                progress_key TEXT NOT NULL DEFAULT '', progress_at TEXT NOT NULL,
+                next_wake_at TEXT NOT NULL, deadline_at TEXT,
+                result TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS workflow_watches (
+                id INTEGER PRIMARY KEY, workflow_id TEXT NOT NULL,
+                event_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+                last_observation TEXT NOT NULL DEFAULT '', next_check_at TEXT NOT NULL,
+                deadline_at TEXT, active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY(workflow_id) REFERENCES durable_workflows(id)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS workflow_events (
+                id INTEGER PRIMARY KEY, event_key TEXT NOT NULL UNIQUE,
+                workflow_id TEXT NOT NULL, event_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL, payload TEXT NOT NULL,
+                created_at TEXT NOT NULL, processed_at TEXT,
+                FOREIGN KEY(workflow_id) REFERENCES durable_workflows(id)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS workflow_attempts (
+                id INTEGER PRIMARY KEY, workflow_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL, owner TEXT NOT NULL,
+                state TEXT NOT NULL, status TEXT NOT NULL,
+                started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL,
+                progress_key TEXT NOT NULL DEFAULT '', finished_at TEXT,
+                detail TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(workflow_id) REFERENCES durable_workflows(id)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE INDEX IF NOT EXISTS durable_workflows_due
+                ON durable_workflows(status, next_wake_at)"""
+        )
+        self.connection.execute(
+            """CREATE INDEX IF NOT EXISTS workflow_watches_due
+                ON workflow_watches(active, next_check_at)"""
+        )
+        self.connection.execute(
+            """CREATE INDEX IF NOT EXISTS workflow_events_pending
+                ON workflow_events(workflow_id, processed_at)"""
+        )
+        self.connection.execute(
+            """CREATE INDEX IF NOT EXISTS workflow_attempts_by_workflow
+                ON workflow_attempts(workflow_id, id)"""
         )
         self.connection.commit()
 
@@ -113,6 +186,34 @@ class State:
                 "requested_backend, status, skills, created_at "
                 "FROM execution_results ORDER BY id DESC LIMIT ?",
                 (limit,),
+            ))
+
+    def record_decision(
+        self, run_id: int, *, phase: str, decision: str, reason: str,
+        evidence: str = "", result: str = "open",
+    ) -> int:
+        """Append one immutable, reviewable workflow decision."""
+        now = datetime.now(timezone.utc).isoformat()
+        values = tuple(
+            str(value).replace("\x00", "").replace("\r", " ").replace("\n", " ")[:4000]
+            for value in (phase, decision, reason, evidence, result)
+        )
+        with self.lock:
+            cursor = self.connection.execute(
+                "INSERT INTO run_decisions("
+                "run_id, phase, decision, reason, evidence, result, created_at"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (run_id, *values, now),
+            )
+            self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def decisions(self, run_id: int) -> list[tuple[object, ...]]:
+        with self.lock:
+            return list(self.connection.execute(
+                "SELECT phase, decision, reason, evidence, result, created_at "
+                "FROM run_decisions WHERE run_id=? ORDER BY id",
+                (run_id,),
             ))
 
     def recent(self, limit: int = 20) -> list[tuple[object, ...]]:

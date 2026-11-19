@@ -74,6 +74,27 @@ class SecurityAuditConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class WorkflowConfig:
+    """Native playbook and independent-verification policy."""
+
+    enabled: bool = False
+    independent_verifier: bool = True
+    decision_log: bool = True
+    max_iterations: int = 2
+    implementation_model: str = ""
+    verifier_model: str = ""
+    runtime_enabled: bool = True
+    heartbeat_seconds: int = 300
+    lease_seconds: int = 900
+    stalled_after_seconds: int = 1800
+    max_recovery_attempts: int = 3
+    max_execution_attempts: int = 6
+    retry_backoff_seconds: int = 120
+    poll_fallback_seconds: int = 600
+    max_wait_hours: int = 72
+
+
+@dataclasses.dataclass(frozen=True)
 class AutomationConfig:
     agent_name: str = "CTOLoop"
     agent_icon: str = "🤖"
@@ -115,6 +136,7 @@ class Settings:
     codex: CodexConfig
     gstack: GStackConfig
     security_audit: SecurityAuditConfig
+    workflow: WorkflowConfig
     automation: AutomationConfig
     scheduler: SchedulerConfig
     config_path: pathlib.Path
@@ -214,6 +236,8 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
     codex_raw = raw.get("codex", {})
     gstack_raw = raw.get("gstack", {})
     security_audit_raw = raw.get("security_audit", {})
+    workflow_raw = raw.get("workflow", {})
+    workflow_runtime_raw = workflow_raw.get("runtime", {})
     auto_raw = raw.get("automation", {})
     scheduler_raw = raw.get("scheduler", {})
     codex = CodexConfig(
@@ -286,6 +310,64 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
         ),
         execution_policy=execution_policy,
     )
+    max_iterations = int(workflow_raw.get("max_iterations", 2))
+    if not 1 <= max_iterations <= 8:
+        raise ValueError("[workflow].max_iterations must be between 1 and 8")
+    heartbeat_seconds = int(workflow_runtime_raw.get("heartbeat_seconds", 300))
+    lease_seconds = int(workflow_runtime_raw.get("lease_seconds", 900))
+    stalled_after_seconds = int(
+        workflow_runtime_raw.get("stalled_after_seconds", 1800)
+    )
+    max_recovery_attempts = int(
+        workflow_runtime_raw.get("max_recovery_attempts", 3)
+    )
+    max_execution_attempts = int(
+        workflow_runtime_raw.get("max_execution_attempts", 6)
+    )
+    retry_backoff_seconds = int(
+        workflow_runtime_raw.get("retry_backoff_seconds", 120)
+    )
+    poll_fallback_seconds = int(
+        workflow_runtime_raw.get("poll_fallback_seconds", 600)
+    )
+    max_wait_hours = int(workflow_runtime_raw.get("max_wait_hours", 72))
+    if heartbeat_seconds < 10:
+        raise ValueError("[workflow.runtime].heartbeat_seconds must be at least 10")
+    if lease_seconds <= heartbeat_seconds:
+        raise ValueError(
+            "[workflow.runtime].lease_seconds must be greater than heartbeat_seconds"
+        )
+    if stalled_after_seconds < lease_seconds:
+        raise ValueError(
+            "[workflow.runtime].stalled_after_seconds must be at least lease_seconds"
+        )
+    if not 0 <= max_recovery_attempts <= 10:
+        raise ValueError(
+            "[workflow.runtime].max_recovery_attempts must be between 0 and 10"
+        )
+    if not 1 <= max_execution_attempts <= 20:
+        raise ValueError(
+            "[workflow.runtime].max_execution_attempts must be between 1 and 20"
+        )
+    if retry_backoff_seconds < 1 or poll_fallback_seconds < 10 or max_wait_hours < 1:
+        raise ValueError("[workflow.runtime] retry, poll, and wait budgets must be positive")
+    workflow = WorkflowConfig(
+        enabled=bool(workflow_raw.get("enabled", False)),
+        independent_verifier=bool(workflow_raw.get("independent_verifier", True)),
+        decision_log=bool(workflow_raw.get("decision_log", True)),
+        max_iterations=max_iterations,
+        implementation_model=str(workflow_raw.get("implementation_model", "")).strip(),
+        verifier_model=str(workflow_raw.get("verifier_model", "")).strip(),
+        runtime_enabled=bool(workflow_runtime_raw.get("enabled", True)),
+        heartbeat_seconds=heartbeat_seconds,
+        lease_seconds=lease_seconds,
+        stalled_after_seconds=stalled_after_seconds,
+        max_recovery_attempts=max_recovery_attempts,
+        max_execution_attempts=max_execution_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
+        poll_fallback_seconds=poll_fallback_seconds,
+        max_wait_hours=max_wait_hours,
+    )
     automation = AutomationConfig(
         agent_name=str(auto_raw.get("agent_name", "CTOLoop")).strip() or "CTOLoop",
         agent_icon=str(auto_raw.get("agent_icon", "🤖")).strip(),
@@ -351,6 +433,6 @@ def load_settings(path: str | os.PathLike[str]) -> Settings:
         max_parallel_repositories=max(1, int(scheduler_raw.get("max_parallel_repositories", 2))),
     )
     return Settings(
-        tuple(targets), codex, gstack, security_audit, automation, scheduler,
+        tuple(targets), codex, gstack, security_audit, workflow, automation, scheduler,
         config_path,
     )
