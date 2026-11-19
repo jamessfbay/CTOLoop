@@ -65,6 +65,98 @@ reports that input is required instead of guessing.
 
 After step 1, the normal path is fully unattended.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph GH["GitHub control plane"]
+        ISSUE["Issue + agent:ready"]
+        PR["Pull request"]
+        SIGNALS["HEAD / CI / review / mergeability"]
+        MERGED["Merged PR"]
+    end
+
+    subgraph DAEMON["CTOLoop daemon"]
+        INTAKE["Authorized event intake"]
+
+        subgraph DURABLE["Durable orchestration"]
+            DB[("SQLite state<br/>jobs · attempts · events · decisions")]
+            SCHED["Scheduler<br/>deadline · retry · recovery budget"]
+            LEASE["Leased worker<br/>heartbeat · progress · fencing"]
+            WATCH["PR watcher<br/>event wake-up + polling fallback"]
+        end
+
+        subgraph DELIVERY["Governed delivery pipeline"]
+            TRIAGE{"Read-only triage"}
+            ANSWER["Issue answer"]
+            PLAYBOOK["Bounded playbook"]
+            IMPLEMENT["Isolated implementation"]
+            VALIDATE["Protected-path checks<br/>+ repository validation"]
+            VERIFY["Independent verifier"]
+            PUBLISH["Checkpointed commit<br/>push · create PR"]
+        end
+
+        UPDATE["Production synchronization<br/>fast-forward · copy · commands"]
+    end
+
+    subgraph EXEC["Isolated execution environment"]
+        WORKTREE["Per-Issue Git worktree"]
+        AGENTS["Codex + optional gstack"]
+        SECURITY["Static security-audit workflow"]
+    end
+
+    subgraph TARGET["Repository-owned systems"]
+        ORIGIN["Target Git repository"]
+        CI["GitHub Actions / branch policy"]
+        PROD["Optional production checkout"]
+    end
+
+    ISSUE --> INTAKE
+    INTAKE -->|"idempotent issue-delivery job"| DB
+    DB <--> SCHED
+    SCHED --> LEASE
+    LEASE --> TRIAGE
+    TRIAGE -->|"question / analysis"| ANSWER
+    ANSWER --> ISSUE
+    TRIAGE -->|"code change"| PLAYBOOK
+    PLAYBOOK --> IMPLEMENT
+    IMPLEMENT <--> AGENTS
+    IMPLEMENT <--> WORKTREE
+    SECURITY -.->|"separate static-only path"| WORKTREE
+    WORKTREE --> VALIDATE
+    VALIDATE --> VERIFY
+    VERIFY -->|"needs changes"| IMPLEMENT
+    VERIFY -->|"pass"| PUBLISH
+    PUBLISH --> ORIGIN
+    PUBLISH --> PR
+    PR --> CI
+    PR --> SIGNALS
+    CI --> SIGNALS
+    SIGNALS --> WATCH
+    WATCH -->|"deduplicated event"| DB
+    SIGNALS --> MERGED
+    MERGED --> WATCH
+    MERGED -.->|"next scheduler polling cycle"| UPDATE
+    UPDATE --> ORIGIN
+    UPDATE --> PROD
+
+    classDef control fill:#ddf4ff,stroke:#0969da,color:#24292f;
+    classDef durable fill:#fff8c5,stroke:#9a6700,color:#24292f;
+    classDef execution fill:#dafbe1,stroke:#1a7f37,color:#24292f;
+    classDef boundary fill:#f6f8fa,stroke:#57606a,color:#24292f;
+    class ISSUE,PR,SIGNALS,MERGED control;
+    class DB,SCHED,LEASE,WATCH durable;
+    class TRIAGE,ANSWER,PLAYBOOK,IMPLEMENT,VALIDATE,VERIFY,PUBLISH,UPDATE execution;
+    class WORKTREE,AGENTS,SECURITY,ORIGIN,CI,PROD boundary;
+```
+
+Solid arrows show the durable, unattended delivery path. The dashed production
+arrow is intentionally different: PR lifecycle monitoring is event-aware and
+restart-safe, while production synchronization currently starts on the next main
+scheduler polling cycle. SQLite is the source of truth for workflow recovery;
+GitHub remains the authorization and collaboration control plane, and target
+repositories retain ownership of CI and production credentials.
+
 ## Requirements
 
 - Python 3.11 or newer
